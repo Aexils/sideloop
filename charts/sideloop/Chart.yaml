@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sideloop
+description: Sideloadly headless — re-signature et réinstallation d'apps iOS (api FastAPI + anisette v3 + CronJob refresh)
+type: application
+version: 0.1.0
+appVersion: "latest"

@@ -1,0 +1,63 @@
+# Values par défaut de la chart sideloop. Les values d'environnement (homelab)
+# surchargent ce fichier — voir le repo d'infra (pattern multi-sources ArgoCD).
+
+# Image sideloop (api + CronJob refresh). Tag SHA écrit par ArgoCD Image Updater.
+image:
+  repository: ghcr.io/aexils/sideloop
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Anisette EN K8S (full-k8s pour métriques/logs uniformes). Le PVC anisette-state
+# garde l'adi.pb TRUSTÉ (2FA fait UNE fois contre ce pod → 0 re-2FA ensuite).
+# Bootstrap : après 1er déploiement, faire le 2FA contre ce pod (cf. README).
+anisetteUrl: "http://anisette:6969/"
+
+anisette:
+  enabled: true
+  image:
+    repository: dadoum/anisette-v3-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 10m, memory: 64Mi}
+    limits: {memory: 128Mi}
+
+# Compte Apple dédié. Le mot de passe vient d'un Secret (jamais dans les values).
+apple:
+  appleId: ""            # ex. levasseur.alexis@uqam.ca
+  teamId: ""             # ex. 245M5C8BJT
+  deviceUdids: ""        # UDID séparés par des virgules (jusqu'à 3 devices)
+  passwordSecret: sideloop-apple   # Secret (clé "password"), scellé via Sealed Secrets
+
+# CronJob de re-signature (marge < 7 jours d'expiration du cert gratuit).
+refresh:
+  enabled: true
+  schedule: "0 4 */5 * *"   # tous les 5 jours à 04:00
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+
+# Frontend / API (upload d'IPA, gestion des apps gérées).
+api:
+  resources:
+    requests: {cpu: 20m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+persistence:
+  storageClassName: ""             # anisette-state : local-path (défaut)
+  nfsServer: "10.10.10.1"          # pve sur vmbr0 (exporte déjà /mnt/media)
+  # IPAs sources + state.json, sur le DD externe 1To.
+  ipas:
+    path: /mnt/media/sideloop-ipas
+    size: 20Gi
+  # IPAs signées + manifest, sur le DD externe (lues par l'agent pve).
+  signed:
+    path: /mnt/media/sideloop-signed
+    size: 20Gi
+
+route:
+  enabled: true
+  hostname: sideloop.example.com
+  parentRef:
+    name: homelab-gw
+    namespace: envoy-gateway-system

@@ -1,0 +1,64 @@
+{{- if .Values.refresh.enabled }}
+# CronJob de re-signature. Signe chaque app gérée (auth Apple 2FA-free via
+# l'anisette stable + zsign) et dépose les IPA signées + manifest.json dans le
+# volume `signed` (NFS), que l'agent pve installe par le tunnel Wi-Fi.
+# ⚠ L'install N'EST PAS ici : elle exige l'accès L2/mDNS au device (couche pve).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sideloop-refresh
+  labels:
+    app.kubernetes.io/part-of: sideloop
+spec:
+  schedule: {{ .Values.refresh.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: sideloop-refresh
+            app.kubernetes.io/part-of: sideloop
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: refresh
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["sideloop-refresh"]
+              env:
+                - name: SIDELOOP_DATA_DIR
+                  value: /data
+                - name: SIDELOOP_SIGNED_DIR
+                  value: /signed
+                - name: SIDELOOP_ANISETTE_URL
+                  value: {{ .Values.anisetteUrl | quote }}
+                - name: SIDELOOP_APPLE_ID
+                  value: {{ .Values.apple.appleId | quote }}
+                - name: SIDELOOP_TEAM_ID
+                  value: {{ .Values.apple.teamId | quote }}
+                - name: SIDELOOP_DEVICE_UDIDS
+                  value: {{ .Values.apple.deviceUdids | quote }}
+                - name: SIDELOOP_APPLE_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.apple.passwordSecret }}
+                      key: password
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: signed
+                  mountPath: /signed
+              resources:
+                {{- toYaml .Values.refresh.resources | nindent 16 }}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: sideloop-data
+            - name: signed
+              persistentVolumeClaim:
+                claimName: sideloop-signed
+{{- end }}

@@ -1,0 +1,92 @@
+--- /opt/grandslam/src/grandslam/gsa.py.bak	2026-07-13 17:12:10.248890089 -0400
++++ /opt/grandslam/src/grandslam/gsa.py	2026-07-13 21:42:42.755541406 -0400
+@@ -377,58 +377,37 @@
+ 
+ 
+ def sms_second_factor(dsid, idms_token, anisette: Anisette):
+-    # TODO: Figure out how to make SMS 2FA work correctly
+-    raise NotImplementedError("SMS 2FA is not yet implemented")
++    import os as _os
+     identity_token = b64encode((dsid + ":" + idms_token).encode()).decode()
+-
+     headers = {
+-        "Content-Type": "text/x-xml-plist",
+-        "User-Agent": "Xcode",
+-        # "Accept": "text/x-xml-plist",
+-        "Accept": "application/x-buddyml",
+-        "Accept-Language": "en-us",
++        "User-Agent": "Xcode", "Accept-Language": "en-us",
+         "X-Apple-Identity-Token": identity_token,
++        "Content-Type": "application/json", "Accept": "application/json",
+     }
+-
+     headers.update(anisette.generate_headers(client_info=True))
+ 
+-    body = {"serverInfo": {"phoneNumber.id": "1"}}
+-
+-    # This will send the 2FA code to the user's phone over SMS
+-    # We don't care about the response, it's just some HTML with a form for entering the code
+-    # Easier to just use a text prompt
+-    requests.post(
+-        "https://gsa.apple.com/auth/verify/phone/put?mode=sms",
+-        data=plist.dumps(body),
+-        headers=headers,
+-        verify=False,
+-        timeout=5,
+-    )
+-
+-    # Prompt for the 2FA code. It's just a string like '123456', no dashes or spaces
+-    code = input("Enter 2FA code: ")
+-
+-    body = {
+-        "securityCode.code": code,
+-        "serverInfo": {"mode": "sms", "phoneNumber.id": "1"},
+-    }
+-    # headers["security-code"] = code
+-
+-    # Send the 2FA code to Apple
+-    resp = requests.post(
+-        "https://gsa.apple.com/auth/verify/phone/securitycode?referrer=/auth/verify/phone/put",
+-        headers=headers,
+-        data=plist.dumps(body),
+-        verify=False,
+-        timeout=5,
+-    )
+-    print(resp.content.decode())
+-    # r = plist.loads(resp.content)
+-    # if check_error(r):
+-    #    return
+-
+-    # print("2FA successful")
+-
++    s = requests.Session()
++    s.verify = False
++    s.headers.update(headers)
++
++    # ENVOI : PUT /auth/verify/phone  (SANS slash final !)
++    snd = s.put("https://gsa.apple.com/auth/verify/phone",
++                json={"phoneNumber": {"id": 1}, "mode": "sms"}, timeout=15)
++    print("Envoi SMS ->", snd.status_code)
++
++    code = _os.environ.get("SMS_CODE") or input("Enter SMS 2FA code: ")
++    code = str(code).strip()
++
++    # SOUMISSION : POST /auth/verify/phone/securitycode (meme Session = cookies)
++    resp = s.post("https://gsa.apple.com/auth/verify/phone/securitycode",
++                  json={"phoneNumber": {"id": 1}, "securityCode": {"code": code}, "mode": "sms"},
++                  timeout=15)
++    print("Soumission ->", resp.status_code)
++    if resp.status_code in (200, 204):
++        print("2FA successful")
++        return
++    print("body:", resp.text[:400].replace(chr(10), " "))
++    raise RuntimeError(f"SMS 2FA validation failed ({resp.status_code})")
+ 
+ def authenticate(username, password, anisette: Anisette):
+ 
+@@ -502,3 +481,5 @@
+         return
+     else:
+         print("Assuming 2FA is not required")
++
++    return spd

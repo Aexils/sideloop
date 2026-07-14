@@ -1,0 +1,71 @@
+# IPAs sources + state.json — sur le DD externe 1To (/mnt/media, déjà exporté
+# NFS vers 10.10.10.0/24). Le CronJob les lit, le frontend/toi les y déposez.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sideloop-data-pv
+  labels: {app.kubernetes.io/part-of: sideloop}
+spec:
+  capacity: {storage: {{ .Values.persistence.ipas.size }}}
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: {{ .Values.persistence.nfsServer }}
+    path: {{ .Values.persistence.ipas.path }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sideloop-data
+  labels: {app.kubernetes.io/part-of: sideloop}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: sideloop-data-pv
+  resources: {requests: {storage: {{ .Values.persistence.ipas.size }}}}
+{{- if .Values.anisette.enabled }}
+---
+# État de la « machine » anisette EN POD = l'identité TRUSTÉE (adi.pb). ⚠ Restaurée
+# au bootstrap depuis pve — NE PAS reprovisionner (re-2FA). (Par défaut anisette
+# tourne sur pve, ce PVC n'est donc pas créé.)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: anisette-state
+  labels: {app.kubernetes.io/part-of: sideloop}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 128Mi}}
+  {{- with .Values.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}
+---
+# IPAs signées + manifest.json — sur /mnt/media aussi. Le CronJob (k8s) écrit
+# via NFS ; l'AGENT PVE les lit en local (/mnt/media/sideloop-signed) et les
+# installe par le tunnel Wi-Fi.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: sideloop-signed-pv
+  labels: {app.kubernetes.io/part-of: sideloop}
+spec:
+  capacity: {storage: {{ .Values.persistence.signed.size }}}
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  nfs:
+    server: {{ .Values.persistence.nfsServer }}
+    path: {{ .Values.persistence.signed.path }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sideloop-signed
+  labels: {app.kubernetes.io/part-of: sideloop}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: sideloop-signed-pv
+  resources: {requests: {storage: {{ .Values.persistence.signed.size }}}}

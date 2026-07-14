@@ -1,0 +1,63 @@
+# API FastAPI + frontend. Service "sideloop" exposé via l'HTTPRoute.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sideloop
+  labels:
+    app.kubernetes.io/name: sideloop
+    app.kubernetes.io/part-of: sideloop
+spec:
+  replicas: 1          # PVC RWO (session/pairing/IPAs partagés) : une instance
+  strategy:
+    type: Recreate     # évite deux pods sur le même volume pendant un rollout
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sideloop
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sideloop
+        app.kubernetes.io/part-of: sideloop
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: SIDELOOP_DATA_DIR
+              value: /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 15
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sideloop-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sideloop
+  labels:
+    app.kubernetes.io/name: sideloop
+    app.kubernetes.io/part-of: sideloop
+spec:
+  selector:
+    app.kubernetes.io/name: sideloop
+  ports:
+    - port: 80
+      targetPort: 8000

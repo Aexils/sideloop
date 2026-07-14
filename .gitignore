@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# JAMAIS de secrets ni de données Apple dans le repo
+*.p12
+*.mobileprovision
+*.ipa
+pairing*.plist
+apple-session.json
+data/

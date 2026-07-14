@@ -1,0 +1,11 @@
+# /etc/systemd/system/sideloop-install-agent.service
+# Installe les IPA signées par le CronJob k8s (manifest sur /mnt/media/sideloop-signed)
+# sur les iPhones via le tunnel. Oneshot déclenché par le .timer.
+[Unit]
+Description=sideloop install agent
+After=sideloop-tunneld.service
+Requires=sideloop-tunneld.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/sideloop/install_agent.py

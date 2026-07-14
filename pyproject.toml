@@ -1,0 +1,29 @@
+[project]
+name = "sideloop"
+version = "0.1.0"
+description = "Re-signature automatique d'apps iOS avec un Apple ID gratuit (CronJob k8s)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "requests>=2.32",
+    "cryptography>=43",        # déchiffrement AES-GCM des tokens app
+    # grandslam (JJTech0130, PATCHÉ) est installé depuis git dans le Dockerfile ;
+    # ses deps : srp, pbkdf2 (tirées aussi).
+    "srp>=1.0.21",
+    "pbkdf2>=1.3",
+]
+
+[project.scripts]
+sideloop-api = "sideloop.api:main"
+sideloop-refresh = "sideloop.refresh:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

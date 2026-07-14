@@ -1,0 +1,15 @@
+# /etc/systemd/system/sideloop-tunneld.service
+# Tunnel RemoteXPC vers les iPhones (Wi-Fi maison). Requis pour l'install.
+# Découvre les devices via mDNS (accès L2 = capacité de pve, pas du cluster).
+[Unit]
+Description=sideloop tunneld (tunnels Wi-Fi vers les iPhones)
+After=network-online.target usbmuxd.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/root/.local/bin/pymobiledevice3 remote tunneld
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+{{- if .Values.route.enabled }}
+# Frontend + API servis par le pod sideloop, via le Gateway partagé homelab-gw.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: sideloop
+  labels:
+    app.kubernetes.io/part-of: sideloop
+spec:
+  parentRefs:
+    - name: {{ .Values.route.parentRef.name }}
+      namespace: {{ .Values.route.parentRef.namespace }}
+  hostnames:
+    - {{ .Values.route.hostname | quote }}
+  rules:
+    - backendRefs:
+        - name: sideloop
+          port: 80
+{{- end }}

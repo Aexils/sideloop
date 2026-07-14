@@ -1,0 +1,52 @@
+{{- if .Values.anisette.enabled }}
+# Serveur anisette v3 (image officielle Dadoum). Fournit les jetons ADI qui
+# font croire à Apple qu'on signe depuis un Mac de confiance. Volume propre
+# pour la persistance de la « machine » anisette (stabilité = moins de 2FA).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: anisette
+  labels:
+    app.kubernetes.io/name: anisette
+    app.kubernetes.io/part-of: sideloop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: anisette
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: anisette
+        app.kubernetes.io/part-of: sideloop
+    spec:
+      containers:
+        - name: anisette
+          image: "{{ .Values.anisette.image.repository }}:{{ .Values.anisette.image.tag }}"
+          imagePullPolicy: {{ .Values.anisette.image.pullPolicy }}
+          ports:
+            - containerPort: 6969
+          volumeMounts:
+            - name: anisette-state
+              mountPath: /home/Alcoholic/.config/anisette-v3/lib/
+          resources:
+            {{- toYaml .Values.anisette.resources | nindent 12 }}
+      volumes:
+        - name: anisette-state
+          persistentVolumeClaim:
+            claimName: anisette-state
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: anisette
+  labels:
+    app.kubernetes.io/name: anisette
+    app.kubernetes.io/part-of: sideloop
+spec:
+  selector:
+    app.kubernetes.io/name: anisette
+  ports:
+    - port: 6969
+      targetPort: 6969
+{{- end }}

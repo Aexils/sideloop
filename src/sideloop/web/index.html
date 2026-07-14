@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sideloop</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto;
+           padding: 0 1rem; background: #16181d; color: #e8eaed; }
+    h1 { font-weight: 650; } code { color: #9ecbff; }
+    section { background: #1e2128; border: 1px solid #2c313a; border-radius: 12px;
+              padding: 1rem 1.25rem; margin: 1rem 0; }
+    button { background: #3b82f6; color: #fff; border: 0; border-radius: 8px;
+             padding: .5rem .9rem; font-size: 1rem; cursor: pointer; }
+    button.ghost { background: #2c313a; }
+    input { background: #12141a; border: 1px solid #2c313a; color: #e8eaed;
+            border-radius: 8px; padding: .5rem; width: 100%; box-sizing: border-box; }
+    label { display: block; margin: .5rem 0 .2rem; font-size: .85rem; color: #9aa0aa; }
+    .app { display: flex; justify-content: space-between; align-items: center;
+           padding: .5rem 0; border-bottom: 1px solid #2c313a; }
+    .muted { color: #9aa0aa; font-size: .85rem; }
+    .row { display: flex; gap: .5rem; }
+  </style>
+</head>
+<body>
+  <h1>sideloop</h1>
+  <p class="muted">Re-signature et réinstallation automatiques d'apps iOS depuis le cluster.</p>
+
+  <section>
+    <h2>1. Compte Apple</h2>
+    <div id="login-form">
+      <label>Apple ID</label>
+      <input id="apple-id" type="email" autocomplete="username" />
+      <label>Mot de passe</label>
+      <input id="apple-pw" type="password" autocomplete="current-password" />
+      <div class="row" style="margin-top:.75rem"><button onclick="login()">Se connecter</button></div>
+    </div>
+    <div id="twofa-form" style="display:none">
+      <label>Code de vérification (2FA)</label>
+      <input id="twofa-code" inputmode="numeric" />
+      <div class="row" style="margin-top:.75rem"><button onclick="submit2fa()">Valider</button></div>
+    </div>
+    <p id="login-status" class="muted"></p>
+  </section>
+
+  <section>
+    <h2>2. Applications (.ipa)</h2>
+    <div class="row">
+      <input id="ipa-file" type="file" accept=".ipa" />
+      <button onclick="upload()">Ajouter</button>
+    </div>
+    <div id="apps"></div>
+  </section>
+
+  <section>
+    <h2>3. Refresh</h2>
+    <p class="muted">Le CronJob le fait automatiquement. Bouton = déclenchement manuel.</p>
+    <button class="ghost" onclick="refresh()">Refresh maintenant</button>
+    <pre id="refresh-out" class="muted"></pre>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const api = (p, opt) => fetch("/api" + p, opt).then(r => r.json());
+
+    async function loadApps() {
+      const apps = await api("/apps");
+      $("apps").innerHTML = apps.length ? "" : "<p class='muted'>Aucune app.</p>";
+      for (const a of apps) {
+        const div = document.createElement("div");
+        div.className = "app";
+        div.innerHTML = `<div><b>${a.name}</b><br><span class="muted">${a.bundle_id}
+          — ${a.installed ? "installée" : "en attente"}</span></div>`;
+        const del = document.createElement("button");
+        del.className = "ghost"; del.textContent = "Retirer";
+        del.onclick = async () => {
+          await fetch("/api/apps/" + encodeURIComponent(a.bundle_id), { method: "DELETE" });
+          loadApps();
+        };
+        div.appendChild(del);
+        $("apps").appendChild(div);
+      }
+    }
+
+    async function login() {
+      const r = await api("/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apple_id: $("apple-id").value, password: $("apple-pw").value }),
+      });
+      if (r.status === "2fa_required") {
+        $("login-form").style.display = "none";
+        $("twofa-form").style.display = "block";
+        $("login-status").textContent = "Code 2FA envoyé sur vos appareils Apple.";
+      } else {
+        $("login-status").textContent = "Statut : " + (r.detail || r.status);
+      }
+    }
+
+    async function submit2fa() {
+      const r = await api("/login/2fa", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: $("twofa-code").value }),
+      });
+      $("login-status").textContent = "Statut : " + (r.detail || r.status);
+    }
+
+    async function upload() {
+      const f = $("ipa-file").files[0];
+      if (!f) return;
+      const fd = new FormData(); fd.append("file", f);
+      await fetch("/api/apps", { method: "POST", body: fd });
+      $("ipa-file").value = ""; loadApps();
+    }
+
+    async function refresh() {
+      $("refresh-out").textContent = "En cours…";
+      const r = await api("/refresh", { method: "POST" });
+      $("refresh-out").textContent = JSON.stringify(r, null, 2);
+      loadApps();
+    }
+
+    loadApps();
+  </script>
+</body>
+</html>
