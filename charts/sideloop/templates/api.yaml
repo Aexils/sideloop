@@ -28,9 +28,23 @@ spec:
           env:
             - name: SIDELOOP_DATA_DIR
               value: /data
+            # /api/status lit install-status.json (écrit par l'agent pve) ici.
+            - name: SIDELOOP_SIGNED_DIR
+              value: /signed
+            # Identité (compte + devices) affichée par /api/status. PAS de mot de
+            # passe : le frontend ne se logge jamais à Apple (c'est le CronJob).
+            - name: SIDELOOP_APPLE_ID
+              value: {{ .Values.apple.appleId | quote }}
+            - name: SIDELOOP_TEAM_ID
+              value: {{ .Values.apple.teamId | quote }}
+            - name: SIDELOOP_DEVICE_UDIDS
+              value: {{ .Values.apple.deviceUdids | quote }}
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: signed
+              mountPath: /signed
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -47,6 +61,9 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: sideloop-data
+        - name: signed
+          persistentVolumeClaim:
+            claimName: sideloop-signed
 ---
 apiVersion: v1
 kind: Service
