@@ -28,6 +28,7 @@ from .models import (
 # ProductType Apple → nom commercial (pour un libellé lisible dans Nexus).
 # Étendre au besoin quand d'autres appareils sont ajoutés.
 PRODUCT_NAMES = {
+    # ── iPhone ──
     "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
     "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max",
     "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus",
@@ -36,6 +37,18 @@ PRODUCT_NAMES = {
     "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
     "iPhone14,5": "iPhone 13", "iPhone14,4": "iPhone 13 mini",
     "iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max",
+    "iPhone13,1": "iPhone 12 mini", "iPhone13,2": "iPhone 12",
+    "iPhone13,3": "iPhone 12 Pro", "iPhone13,4": "iPhone 12 Pro Max",
+    # ── iPad Air (toutes générations : gén inconnue côté Alexis) ──
+    "iPad4,1": "iPad Air", "iPad4,2": "iPad Air", "iPad4,3": "iPad Air",
+    "iPad5,3": "iPad Air 2", "iPad5,4": "iPad Air 2",
+    "iPad11,3": "iPad Air (3e gén)", "iPad11,4": "iPad Air (3e gén)",
+    "iPad13,1": "iPad Air (4e gén)", "iPad13,2": "iPad Air (4e gén)",
+    "iPad13,16": "iPad Air (5e gén)", "iPad13,17": "iPad Air (5e gén)",
+    "iPad14,8": "iPad Air 11″ (M2)", "iPad14,9": "iPad Air 11″ (M2)",
+    "iPad14,10": "iPad Air 13″ (M2)", "iPad14,11": "iPad Air 13″ (M2)",
+    "iPad15,3": "iPad Air 11″ (M3)", "iPad15,4": "iPad Air 11″ (M3)",
+    "iPad15,5": "iPad Air 13″ (M3)", "iPad15,6": "iPad Air 13″ (M3)",
 }
 
 
