@@ -69,6 +69,7 @@ class InstallResult(BaseModel):
     udid: str
     ok: bool
     at: datetime
+    device_name: str = ""          # DeviceName iOS (ex. "iPhone"), remonté par l'agent
     error: str = ""
 
 
@@ -85,6 +86,7 @@ class DeviceStatus(BaseModel):
     """Dernier état d'install connu pour un device (globalement ou par app)."""
 
     udid: str
+    name: str = ""                   # nom lisible (DeviceName iOS), sinon UDID côté UI
     last_install_at: datetime | None = None
     last_ok: bool | None = None      # None = jamais tenté
     failures: int = 0                # échecs consécutifs (fenêtre install-status)

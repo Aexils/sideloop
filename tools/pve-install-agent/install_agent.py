@@ -25,6 +25,29 @@ PMD = "/root/.local/bin/pymobiledevice3"
 # État d'install remonté vers k8s (lu par sideloop /api/status → Nexus).
 INSTALL_STATUS = SIGNED_DIR / "install-status.json"
 
+_NAME_CACHE: dict[str, str] = {}
+
+
+def device_name(udid: str) -> str:
+    """Nom lisible de l'appareil (DeviceName iOS) via le tunnel. Caché par run.
+
+    Sert à afficher « iPhone » plutôt que l'UDID dans Nexus. Best-effort : en cas
+    d'échec on renvoie "" (le dashboard retombe sur l'UDID court)."""
+    if udid in _NAME_CACHE:
+        return _NAME_CACHE[udid]
+    name = ""
+    try:
+        r = subprocess.run([PMD, "lockdown", "info", "--tunnel", udid],
+                           capture_output=True, text=True, timeout=30)
+        for line in r.stdout.splitlines():
+            if '"DeviceName"' in line:
+                name = line.split(":", 1)[1].strip().strip('",')
+                break
+    except Exception:  # noqa: BLE001 — best-effort, jamais bloquant
+        pass
+    _NAME_CACHE[udid] = name
+    return name
+
 
 def install(ipa: Path, udid: str) -> tuple[bool, str]:
     """Installe l'IPA sur un device. Renvoie (ok, erreur tronquée)."""
@@ -80,14 +103,15 @@ def main() -> int:
             for udid in e["device_udids"]:
                 results.append({"bundle_id": e["bundle_id"], "udid": udid, "ok": False,
                                 "at": datetime.now(timezone.utc).isoformat(),
-                                "error": "IPA signée absente"})
+                                "device_name": device_name(udid), "error": "IPA signée absente"})
             continue
         print(f"[{e['name']}] {e['bundle_id']} → {len(e['device_udids'])} device(s)")
         for udid in e["device_udids"]:
             ok, err = install(ipa, udid)
             all_ok &= ok
             results.append({"bundle_id": e["bundle_id"], "udid": udid, "ok": ok,
-                            "at": datetime.now(timezone.utc).isoformat(), "error": err})
+                            "at": datetime.now(timezone.utc).isoformat(),
+                            "device_name": device_name(udid), "error": err})
 
     # On remonte TOUJOURS l'état (succès comme échec) pour Nexus.
     write_status(sig, results)

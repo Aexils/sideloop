@@ -53,6 +53,8 @@ def _device_installs(bundle_id: str, inst: InstallStatus) -> list[DeviceStatus]:
         d = out.setdefault(r.udid, DeviceStatus(udid=r.udid))
         d.last_install_at = r.at
         d.last_ok = r.ok
+        if r.device_name:
+            d.name = r.device_name
         d.failures = 0 if r.ok else d.failures + 1
     return list(out.values())
 
@@ -68,6 +70,8 @@ def _global_devices(inst: InstallStatus) -> list[DeviceStatus]:
         if d.last_install_at is None or r.at >= d.last_install_at:
             d.last_install_at = r.at
             d.last_ok = r.ok
+        if r.device_name:
+            d.name = r.device_name
         if not r.ok:
             d.failures += 1
     return list(out.values())
