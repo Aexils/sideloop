@@ -70,6 +70,7 @@ class InstallResult(BaseModel):
     ok: bool
     at: datetime
     device_name: str = ""          # DeviceName iOS (ex. "iPhone"), remonté par l'agent
+    product_type: str = ""         # ex. "iPhone16,1" → mappé en "iPhone 15 Pro" (status.py)
     error: str = ""
 
 

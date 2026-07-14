@@ -25,6 +25,25 @@ from .models import (
 )
 
 
+# ProductType Apple → nom commercial (pour un libellé lisible dans Nexus).
+# Étendre au besoin quand d'autres appareils sont ajoutés.
+PRODUCT_NAMES = {
+    "iPhone17,3": "iPhone 16", "iPhone17,4": "iPhone 16 Plus",
+    "iPhone17,1": "iPhone 16 Pro", "iPhone17,2": "iPhone 16 Pro Max",
+    "iPhone15,4": "iPhone 15", "iPhone15,5": "iPhone 15 Plus",
+    "iPhone16,1": "iPhone 15 Pro", "iPhone16,2": "iPhone 15 Pro Max",
+    "iPhone14,7": "iPhone 14", "iPhone14,8": "iPhone 14 Plus",
+    "iPhone15,2": "iPhone 14 Pro", "iPhone15,3": "iPhone 14 Pro Max",
+    "iPhone14,5": "iPhone 13", "iPhone14,4": "iPhone 13 mini",
+    "iPhone14,2": "iPhone 13 Pro", "iPhone14,3": "iPhone 13 Pro Max",
+}
+
+
+def _display_name(product_type: str, device_name: str) -> str:
+    """Nom commercial (« iPhone 15 Pro ») si connu, sinon DeviceName, sinon ""."""
+    return PRODUCT_NAMES.get(product_type) or device_name or ""
+
+
 def _app_status_label(expires_in_sec: int | None, last_signed: datetime | None) -> str:
     if last_signed is None or expires_in_sec is None:
         return "never"
@@ -53,8 +72,9 @@ def _device_installs(bundle_id: str, inst: InstallStatus) -> list[DeviceStatus]:
         d = out.setdefault(r.udid, DeviceStatus(udid=r.udid))
         d.last_install_at = r.at
         d.last_ok = r.ok
-        if r.device_name:
-            d.name = r.device_name
+        name = _display_name(r.product_type, r.device_name)
+        if name:
+            d.name = name
         d.failures = 0 if r.ok else d.failures + 1
     return list(out.values())
 
@@ -70,8 +90,9 @@ def _global_devices(inst: InstallStatus) -> list[DeviceStatus]:
         if d.last_install_at is None or r.at >= d.last_install_at:
             d.last_install_at = r.at
             d.last_ok = r.ok
-        if r.device_name:
-            d.name = r.device_name
+        name = _display_name(r.product_type, r.device_name)
+        if name:
+            d.name = name
         if not r.ok:
             d.failures += 1
     return list(out.values())
