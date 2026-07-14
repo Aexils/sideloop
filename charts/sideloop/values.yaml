@@ -19,8 +19,8 @@ anisette:
     tag: latest
     pullPolicy: IfNotPresent
   resources:
-    requests: {cpu: 10m, memory: 64Mi}
-    limits: {memory: 128Mi}
+    requests: {cpu: 10m, memory: 128Mi}
+    limits: {memory: 256Mi}   # l'image dadoum a besoin de ~170Mo
 
 # Compte Apple dédié. Le mot de passe vient d'un Secret (jamais dans les values).
 apple:
