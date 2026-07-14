@@ -17,12 +17,10 @@ COPY --from=zsign /usr/local/bin/zsign /usr/local/bin/zsign
 
 WORKDIR /app
 
-# grandslam PATCHÉ (sms_second_factor + authenticate retourne spd).
-COPY tools/apple_auth/grandslam-gsa.patch /tmp/grandslam-gsa.patch
-RUN git clone --depth 1 https://github.com/JJTech0130/grandslam.git /opt/grandslam && \
-    (cd /opt/grandslam && git apply /tmp/grandslam-gsa.patch || \
-     patch -p1 < /tmp/grandslam-gsa.patch) && \
-    pip install --no-cache-dir /opt/grandslam requests
+# grandslam avec notre gsa.py vendorisé (sms_second_factor + authenticate→spd).
+RUN git clone --depth 1 https://github.com/JJTech0130/grandslam.git /opt/grandslam
+COPY tools/apple_auth/gsa.py /opt/grandslam/src/grandslam/gsa.py
+RUN pip install --no-cache-dir /opt/grandslam requests
 
 COPY pyproject.toml README.md ./
 COPY src ./src
