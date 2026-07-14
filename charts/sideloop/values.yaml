@@ -5,7 +5,8 @@
 image:
   repository: ghcr.io/aexils/sideloop
   tag: latest
-  pullPolicy: IfNotPresent
+  pullPolicy: Always        # tag "latest" → tirer la dernière image à chaque run
+                            # (TODO: ArgoCD Image Updater + tags SHA, comme nexus)
 
 # Anisette EN K8S (full-k8s pour métriques/logs uniformes). Le PVC anisette-state
 # garde l'adi.pb TRUSTÉ (2FA fait UNE fois contre ce pod → 0 re-2FA ensuite).
@@ -32,7 +33,7 @@ apple:
 # CronJob de re-signature (marge < 7 jours d'expiration du cert gratuit).
 refresh:
   enabled: true
-  schedule: "0 4 */5 * *"   # tous les 5 jours à 04:00
+  schedule: "0 18 * * *"    # tous les jours à 18h (device à la maison le soir ; cert réutilisé)
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {memory: 1Gi}

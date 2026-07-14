@@ -44,7 +44,7 @@ def run() -> int:
         out = settings.signed_dir / f"{app.resign_bundle_id}.signed.ipa"
         try:
             signing.sign_ipa(session, src, out, app.resign_bundle_id, app.name, settings.devices,
-                             zsign_bin=settings.zsign_bin)
+                             cert_dir=settings.data_dir / "cert", zsign_bin=settings.zsign_bin)
             app.last_signed = now
             entries.append(SignedEntry(name=app.name, bundle_id=app.resign_bundle_id,
                                        signed_ipa=out.name, signed_at=now,

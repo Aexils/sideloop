@@ -152,27 +152,68 @@ def ensure_device(session: Session, udid: str, name: str = "iPhone") -> None:
         raise RuntimeError(f"addDevice: {r.get('resultCode')} {r.get('userString')}")
 
 
-def ensure_cert(session: Session, workdir: Path) -> Path:
-    """Révoque les certs existants, en soumet un nouveau (on garde la clé).
-
-    Retourne le chemin de la clé privée PEM (le cert est extrait du profil ensuite).
-    """
+def _submit_new_cert(session: Session, key: Path) -> None:
+    """Révoque les certs existants et en soumet un nouveau pour NOTRE clé."""
     r = _ok(dev_request(session, "ios/listAllDevelopmentCerts.action", {}), "listCerts")
     for c in r.get("certificates", []):
         sn = c.get("serialNumber") or c.get("serialNum")
         dev_request(session, "ios/revokeDevelopmentCert.action", {"serialNumber": sn})
-    key = workdir / "key.pem"
-    csr = workdir / "csr.pem"
+    csr = key.parent / "csr.pem"
     subprocess.run(
-        ["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
-         "-keyout", str(key), "-out", str(csr), "-subj", "/CN=sideloop/O=sideloop"],
-        check=True, capture_output=True,
+        ["openssl", "req", "-new", "-key", str(key), "-out", str(csr),
+         "-subj", "/CN=sideloop/O=sideloop"], check=True, capture_output=True,
     )
     _ok(dev_request(session, "ios/submitDevelopmentCSR.action",
                     {"csrContent": csr.read_text(),
                      "machineId": str(uuid.uuid4()).upper(),
                      "machineName": "sideloop"}), "submitCSR")
-    return key
+
+
+def _pubkey_of_cert(cert_der: bytes) -> bytes:
+    return subprocess.run(["openssl", "x509", "-inform", "der", "-pubkey", "-noout"],
+                          input=cert_der, capture_output=True, check=True).stdout
+
+
+def _pubkey_of_key(key: Path) -> bytes:
+    return subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout"],
+                          capture_output=True, check=True).stdout
+
+
+def _profile_certs(profile: Path) -> list[bytes]:
+    p7 = subprocess.run(
+        ["openssl", "smime", "-inform", "der", "-verify", "-noverify", "-in", str(profile)],
+        capture_output=True, check=True)
+    return plistlib.loads(p7.stdout)["DeveloperCertificates"]
+
+
+def ensure_identity(session: Session, app_id_id: str, cert_dir: Path, workdir: Path) -> tuple[Path, bytes, Path]:
+    """Retourne (clé, cert_der, profil), en RÉUTILISANT le cert persisté si possible.
+
+    Ne re-soumet un CSR que si notre clé n'a plus de cert associé (révoqué/expiré).
+    Le cert dure ~1 an ; seul le profil (7 jours) est retéléchargé à chaque run.
+    """
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    key = cert_dir / "key.pem"
+    profile = workdir / "app.mobileprovision"
+
+    if not key.exists():
+        subprocess.run(["openssl", "genrsa", "-out", str(key), "2048"],
+                       check=True, capture_output=True)
+        _submit_new_cert(session, key)
+
+    download_profile(session, app_id_id, profile)
+    our_pub = _pubkey_of_key(key)
+    for cert_der in _profile_certs(profile):
+        if _pubkey_of_cert(cert_der) == our_pub:
+            return key, cert_der, profile          # cert réutilisé ✅
+
+    # Notre cert a disparu du profil → en refaire un, puis re-télécharger.
+    _submit_new_cert(session, key)
+    download_profile(session, app_id_id, profile)
+    for cert_der in _profile_certs(profile):
+        if _pubkey_of_cert(cert_der) == our_pub:
+            return key, cert_der, profile
+    raise RuntimeError("cert introuvable dans le profil après soumission")
 
 
 def ensure_app_id(session: Session, bundle_id: str, name: str) -> str:
@@ -196,13 +237,8 @@ def download_profile(session: Session, app_id_id: str, out: Path) -> None:
     out.write_bytes(enc)
 
 
-def build_p12(profile: Path, key: Path, out_p12: Path) -> None:
-    """Extrait le cert du profil (il l'inclut) + clé → p12 (sans mot de passe)."""
-    p7 = subprocess.run(
-        ["openssl", "smime", "-inform", "der", "-verify", "-noverify", "-in", str(profile)],
-        capture_output=True, check=True,
-    )
-    cert_der = plistlib.loads(p7.stdout)["DeveloperCertificates"][0]
+def build_p12(cert_der: bytes, key: Path, out_p12: Path) -> None:
+    """cert (DER) + clé → p12 (sans mot de passe)."""
     with tempfile.TemporaryDirectory() as td:
         der = Path(td) / "c.der"
         pem = Path(td) / "c.pem"
@@ -215,22 +251,22 @@ def build_p12(profile: Path, key: Path, out_p12: Path) -> None:
 
 
 def sign_ipa(session: Session, ipa_in: Path, ipa_out: Path, bundle_id: str,
-             app_name: str, device_udids: list[str], zsign_bin: str = "zsign") -> Path:
-    """Pipeline complet : device(s) → cert → App ID → profil → p12 → zsign.
+             app_name: str, device_udids: list[str], cert_dir: Path,
+             zsign_bin: str = "zsign") -> Path:
+    """Pipeline complet : device(s) → identité (cert réutilisé) → App ID → profil → zsign.
 
-    `bundle_id` doit être UNIQUE et enregistrable par le compte (l'ID d'origine
-    d'apps connues comme com.spotify.client est réservé → re-bundle via zsign -b).
+    `cert_dir` = dossier PERSISTANT (PVC) où vit la clé/cert réutilisés.
+    `bundle_id` doit être UNIQUE et enregistrable (com.spotify.client est réservé →
+    re-bundle via zsign -b).
     """
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         for udid in device_udids:
             ensure_device(session, udid)
-        key = ensure_cert(session, work)
         app_id_id = ensure_app_id(session, bundle_id, app_name)
-        profile = work / "app.mobileprovision"
-        download_profile(session, app_id_id, profile)
+        key, cert_der, profile = ensure_identity(session, app_id_id, cert_dir, work)
         p12 = work / "id.p12"
-        build_p12(profile, key, p12)
+        build_p12(cert_der, key, p12)
         r = subprocess.run(
             [zsign_bin, "-k", str(p12), "-p", "", "-m", str(profile),
              "-b", bundle_id, "-o", str(ipa_out), str(ipa_in)],
