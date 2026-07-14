@@ -17,21 +17,44 @@ import hashlib
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 SIGNED_DIR = Path("/mnt/media/sideloop-signed")
 PMD = "/root/.local/bin/pymobiledevice3"
+# État d'install remonté vers k8s (lu par sideloop /api/status → Nexus).
+INSTALL_STATUS = SIGNED_DIR / "install-status.json"
 
 
-def install(ipa: Path, udid: str) -> bool:
+def install(ipa: Path, udid: str) -> tuple[bool, str]:
+    """Installe l'IPA sur un device. Renvoie (ok, erreur tronquée)."""
     # --tunnel : passe par tunneld (Wi-Fi), PAS --udid (qui veut usbmux/USB).
-    r = subprocess.run([PMD, "apps", "install", "--tunnel", udid, str(ipa)],
-                       capture_output=True, text=True, timeout=600)
-    ok = "Installation succeed" in (r.stdout + r.stderr)
+    try:
+        r = subprocess.run([PMD, "apps", "install", "--tunnel", udid, str(ipa)],
+                           capture_output=True, text=True, timeout=600)
+        out = r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        print(f"    {udid}: ÉCHEC (timeout)")
+        return False, "timeout (device injoignable ?)"
+    ok = "Installation succeed" in out
     print(f"    {udid}: {'OK' if ok else 'ÉCHEC'}")
     if not ok:
-        print("     ", (r.stdout + r.stderr)[-300:])
-    return ok
+        tail = out[-300:]
+        print("     ", tail)
+        return False, tail.strip()[-200:]
+    return True, ""
+
+
+def write_status(sig: str, results: list[dict]) -> None:
+    """Écrit install-status.json (schéma sideloop.models.InstallStatus)."""
+    payload = {
+        "manifest_sig": sig,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "results": results,
+    }
+    tmp = INSTALL_STATUS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(INSTALL_STATUS)
 
 
 def main() -> int:
@@ -48,13 +71,26 @@ def main() -> int:
         return 0
 
     all_ok = True
+    results: list[dict] = []
     for e in data.get("entries", []):
         ipa = SIGNED_DIR / e["signed_ipa"]
         if not ipa.exists():
-            print(f"[{e['name']}] IPA absente: {ipa}"); all_ok = False; continue
+            print(f"[{e['name']}] IPA absente: {ipa}")
+            all_ok = False
+            for udid in e["device_udids"]:
+                results.append({"bundle_id": e["bundle_id"], "udid": udid, "ok": False,
+                                "at": datetime.now(timezone.utc).isoformat(),
+                                "error": "IPA signée absente"})
+            continue
         print(f"[{e['name']}] {e['bundle_id']} → {len(e['device_udids'])} device(s)")
         for udid in e["device_udids"]:
-            all_ok &= install(ipa, udid)
+            ok, err = install(ipa, udid)
+            all_ok &= ok
+            results.append({"bundle_id": e["bundle_id"], "udid": udid, "ok": ok,
+                            "at": datetime.now(timezone.utc).isoformat(), "error": err})
+
+    # On remonte TOUJOURS l'état (succès comme échec) pour Nexus.
+    write_status(sig, results)
 
     if all_ok:
         done.write_text(manifest.read_text())

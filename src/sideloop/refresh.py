@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import signing, storage
 from .config import settings
-from .models import Manifest, SignedEntry
+from .models import Manifest, RunAppResult, RunRecord, SignedEntry
 
 
 def run() -> int:
@@ -23,22 +23,28 @@ def run() -> int:
         print("[refresh] ERREUR: aucun device (SIDELOOP_DEVICE_UDIDS vide).", file=sys.stderr)
         return 2
 
+    now = datetime.now(timezone.utc)
     print(f"[refresh] login Apple (anisette {settings.anisette_url})…")
     try:
         session = signing.login(settings.apple_id, settings.apple_password,
                                 settings.anisette_url, settings.team_id)
     except Exception as e:  # noqa: BLE001
         print(f"[refresh] ÉCHEC login: {e}", file=sys.stderr)
+        # On historise l'échec de login (= alerte 2FA côté Nexus) avant de sortir.
+        storage.append_run(RunRecord(at=now, login_ok=False, results=[]))
         return 3
     print(f"[refresh] connecté (team {session.team_id}, {len(settings.devices)} device(s)).")
 
-    now = datetime.now(timezone.utc)
     entries: list[SignedEntry] = []
+    results: list[RunAppResult] = []
     failed = 0
     for app in apps:
         src = settings.ipa_dir / app.source_ipa
         if not src.exists():
-            print(f"[refresh] ÉCHEC {app.name}: IPA source absente ({src})", file=sys.stderr)
+            msg = f"IPA source absente ({src})"
+            print(f"[refresh] ÉCHEC {app.name}: {msg}", file=sys.stderr)
+            results.append(RunAppResult(name=app.name, bundle_id=app.resign_bundle_id,
+                                        ok=False, error=msg))
             failed += 1
             continue
         out = settings.signed_dir / f"{app.resign_bundle_id}.signed.ipa"
@@ -49,12 +55,16 @@ def run() -> int:
             entries.append(SignedEntry(name=app.name, bundle_id=app.resign_bundle_id,
                                        signed_ipa=out.name, signed_at=now,
                                        device_udids=settings.devices))
+            results.append(RunAppResult(name=app.name, bundle_id=app.resign_bundle_id, ok=True))
             print(f"[refresh] SIGNÉ {app.name} → {out.name}")
         except Exception as e:  # noqa: BLE001 — on continue les autres apps
             print(f"[refresh] ÉCHEC signature {app.name}: {e}", file=sys.stderr)
+            results.append(RunAppResult(name=app.name, bundle_id=app.resign_bundle_id,
+                                        ok=False, error=str(e)))
             failed += 1
 
     storage.save_apps(apps)
+    storage.append_run(RunRecord(at=now, login_ok=True, results=results))
     manifest = Manifest(generated_at=now, entries=entries)
     (settings.signed_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
     print(f"[refresh] manifest écrit ({len(entries)} IPA prêtes à installer par l'agent pve).")

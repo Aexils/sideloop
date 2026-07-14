@@ -36,6 +36,16 @@ class Settings(BaseSettings):
         return self.data_dir / "state.json"
 
     @property
+    def runs_file(self) -> Path:
+        """Historique des refresh (écrit par le CronJob, lu par /api/status)."""
+        return self.data_dir / "runs.json"
+
+    @property
+    def install_status_file(self) -> Path:
+        """État d'install remonté par l'agent pve (via NFS = signed_dir)."""
+        return self.signed_dir / "install-status.json"
+
+    @property
     def devices(self) -> list[str]:
         return [u.strip() for u in self.device_udids.split(",") if u.strip()]
 

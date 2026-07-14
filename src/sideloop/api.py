@@ -9,8 +9,9 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from . import status as status_mod
 from . import storage
-from .models import ManagedApp
+from .models import ManagedApp, SideloopStatus
 
 WEB_DIR = Path(__file__).parent / "web"
 app = FastAPI(title="sideloop", version="0.1.0")
@@ -29,6 +30,15 @@ def index() -> FileResponse:
 @app.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/status")
+def status() -> SideloopStatus:
+    """État agrégé (apps + expiration + devices + refresh + alertes).
+
+    Consommé par Nexus (poll toutes les ~30 s) pour le dashboard et les alertes.
+    """
+    return status_mod.build_status()
 
 
 @app.get("/api/apps")
