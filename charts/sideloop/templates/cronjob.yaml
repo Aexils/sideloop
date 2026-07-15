@@ -12,11 +12,14 @@ metadata:
 spec:
   schedule: {{ .Values.refresh.schedule | quote }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
   jobTemplate:
     spec:
       backoffLimit: 1
+      # Auto-suppression des pods terminés (sinon ils traînent en Completed et
+      # le dashboard les compte comme "pas prêts" → namespace en jaune).
+      ttlSecondsAfterFinished: 600
       template:
         metadata:
           labels:
