@@ -46,6 +46,11 @@ class Settings(BaseSettings):
         return self.signed_dir / "install-status.json"
 
     @property
+    def heartbeat_file(self) -> Path:
+        """Battement de cœur de l'agent pve (via NFS = signed_dir)."""
+        return self.signed_dir / "agent-heartbeat.json"
+
+    @property
     def devices(self) -> list[str]:
         return [u.strip() for u in self.device_udids.split(",") if u.strip()]
 

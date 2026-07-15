@@ -20,6 +20,23 @@ spec:
         app.kubernetes.io/name: anisette
         app.kubernetes.io/part-of: sideloop
     spec:
+      {{- if .Values.anisette.identitySecret }}
+      # Identité anisette auto-réparante : un initContainer réinjecte adi.pb +
+      # device.json (depuis un SealedSecret) à CHAQUE démarrage → l'identité
+      # "machine de confiance" survit à tout reschedule/redémarrage = zéro re-2FA.
+      # (fsGroup 1000 : l'emptyDir doit être inscriptible par l'user Alcoholic.)
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+        - name: seed-identity
+          image: busybox:1.37
+          command: ["sh", "-c", "cp -f /seed/adi.pb /seed/device.json /config/ && chmod 664 /config/adi.pb /config/device.json"]
+          volumeMounts:
+            - name: identity-seed
+              mountPath: /seed
+            - name: anisette-config
+              mountPath: /config
+      {{- end }}
       containers:
         - name: anisette
           image: "{{ .Values.anisette.image.repository }}:{{ .Values.anisette.image.tag }}"
@@ -27,11 +44,22 @@ spec:
           ports:
             - containerPort: 6969
           volumeMounts:
+            {{- if .Values.anisette.identitySecret }}
+            - name: anisette-config
+              mountPath: /home/Alcoholic/.config/anisette-v3
+            {{- end }}
             - name: anisette-state
               mountPath: /home/Alcoholic/.config/anisette-v3/lib/
           resources:
             {{- toYaml .Values.anisette.resources | nindent 12 }}
       volumes:
+        {{- if .Values.anisette.identitySecret }}
+        - name: anisette-config
+          emptyDir: {}
+        - name: identity-seed
+          secret:
+            secretName: {{ .Values.anisette.identitySecret }}
+        {{- end }}
         - name: anisette-state
           persistentVolumeClaim:
             claimName: anisette-state

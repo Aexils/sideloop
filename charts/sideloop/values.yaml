@@ -15,6 +15,9 @@ anisetteUrl: "http://anisette:6969/"
 
 anisette:
   enabled: true
+  # Nom d'un Secret (adi.pb + device.json) réinjecté au démarrage pour garder
+  # l'identité "machine de confiance" (zéro re-2FA). Vide = pas de seed.
+  identitySecret: ""
   image:
     repository: dadoum/anisette-v3-server
     tag: latest

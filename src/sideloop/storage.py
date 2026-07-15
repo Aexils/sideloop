@@ -5,7 +5,7 @@ historique des refresh (runs.json) et état d'install remonté par l'agent pve
 import json
 
 from .config import settings
-from .models import InstallStatus, ManagedApp, RunRecord
+from .models import AgentStatus, InstallStatus, ManagedApp, RunRecord
 
 # Nombre de runs de refresh conservés dans l'historique.
 RUNS_KEEP = 30
@@ -56,3 +56,19 @@ def load_install_status() -> InstallStatus:
     if not f.exists():
         return InstallStatus()
     return InstallStatus.model_validate_json(f.read_text())
+
+
+def load_heartbeat() -> AgentStatus:
+    """Heartbeat de l'agent pve. Absent/illisible → AgentStatus() (stale=True)."""
+    f = settings.heartbeat_file
+    if not f.exists():
+        return AgentStatus()
+    try:
+        data = json.loads(f.read_text())
+        return AgentStatus(
+            last_seen=data.get("at"),
+            tunneld_active=bool(data.get("tunneld_active", False)),
+            reachable_udids=list(data.get("reachable_udids", [])),
+        )
+    except Exception:  # noqa: BLE001
+        return AgentStatus()

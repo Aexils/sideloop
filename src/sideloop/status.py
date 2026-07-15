@@ -116,6 +116,7 @@ def build_status() -> SideloopStatus:
     apps = storage.load_apps()
     runs = storage.load_runs()
     inst = storage.load_install_status()
+    agent = storage.load_heartbeat()
 
     app_statuses: list[AppStatus] = []
     alerts: list[str] = []
@@ -168,6 +169,23 @@ def build_status() -> SideloopStatus:
     if last_run is not None and not last_run.login_ok:
         alerts.append("Login Apple en échec (2FA à refaire ? cf. bootstrap anisette).")
 
+    # Santé de l'agent pve : heartbeat périmé (> 40 min ; le timer tourne aux 30 min)
+    # = agent mort / pve down → plus aucune install possible.
+    AGENT_STALE_SEC = 40 * 60
+    if agent.last_seen is None:
+        agent.stale = True
+        alerts.append("Agent pve : aucun signe de vie (heartbeat absent).")
+    else:
+        ls = agent.last_seen
+        if ls.tzinfo is None:
+            ls = ls.replace(tzinfo=timezone.utc)
+        age = int((now - ls).total_seconds())
+        agent.stale = age > AGENT_STALE_SEC
+        if agent.stale:
+            alerts.append(f"Agent pve muet depuis {age // 60} min (pve down ? timer arrêté ?).")
+        elif not agent.tunneld_active:
+            alerts.append("tunneld arrêté sur pve : les installs Wi-Fi échoueront.")
+
     account = AccountStatus(
         apple_id=settings.apple_id,
         team_id=settings.team_id,
@@ -177,6 +195,7 @@ def build_status() -> SideloopStatus:
     return SideloopStatus(
         generated_at=now,
         account=account,
+        agent=agent,
         devices=_global_devices(inst),
         apps=app_statuses,
         last_refresh_at=last_run.at if last_run else None,

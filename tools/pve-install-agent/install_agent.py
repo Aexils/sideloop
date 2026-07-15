@@ -18,14 +18,18 @@ import json
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 SIGNED_DIR = Path("/mnt/media/sideloop-signed")
 PMD = "/root/.local/bin/pymobiledevice3"
 TUNNELD_UNIT = "sideloop-tunneld"
+TUNNELD_URL = "http://127.0.0.1:49151/"
 # État d'install remonté vers k8s (lu par sideloop /api/status → Nexus).
 INSTALL_STATUS = SIGNED_DIR / "install-status.json"
+# Battement de cœur de l'agent : prouve à Nexus que l'agent pve + tunneld vivent.
+HEARTBEAT = SIGNED_DIR / "agent-heartbeat.json"
 
 # Robustesse : le tunnel RemoteXPC (iOS 26/27, Wi-Fi) décroche parfois pendant
 # les gros transferts (~200 Mo) → on retente avec reconstruction du tunnel.
@@ -43,6 +47,36 @@ _INFO_CACHE: dict[str, tuple[str, str]] = {}
 def restart_tunneld() -> None:
     """Reconstruit tous les tunnels (le device réveillé sera redécouvert en mDNS)."""
     subprocess.run(["systemctl", "restart", TUNNELD_UNIT], check=False)
+
+
+def _tunneld_udids() -> list[str]:
+    """UDID des devices ayant un tunnel actif (vue de tunneld)."""
+    try:
+        with urllib.request.urlopen(TUNNELD_URL, timeout=5) as r:
+            return list(json.load(r).keys())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def write_heartbeat() -> None:
+    """Écrit le battement de cœur (à CHAQUE run, même sans install) → Nexus détecte
+    un agent ou un tunneld mort (fichier périmé)."""
+    try:
+        active = subprocess.run(["systemctl", "is-active", TUNNELD_UNIT],
+                                capture_output=True, text=True).stdout.strip() == "active"
+    except Exception:  # noqa: BLE001
+        active = False
+    payload = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "tunneld_active": active,
+        "reachable_udids": _tunneld_udids(),
+    }
+    try:
+        tmp = HEARTBEAT.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2))
+        tmp.replace(HEARTBEAT)
+    except Exception:  # noqa: BLE001 — jamais bloquant
+        pass
 
 
 def tunnel_ready(udid: str, timeout: int = 12) -> bool:
@@ -150,6 +184,7 @@ def write_status(sig: str, results: list[dict]) -> None:
 
 
 def main() -> int:
+    write_heartbeat()  # toujours, avant tout (prouve que l'agent tourne)
     manifest = SIGNED_DIR / "manifest.json"
     if not manifest.exists():
         print("Aucun manifest.")

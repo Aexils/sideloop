@@ -112,11 +112,24 @@ class AccountStatus(BaseModel):
     app_slots_limit: int = 3                  # compte gratuit : 3 apps actives
 
 
+class AgentStatus(BaseModel):
+    """Battement de cœur de l'agent pve (heartbeat.json sur NFS).
+
+    Prouve que l'agent d'install pve ET tunneld tournent. Un heartbeat périmé =
+    agent mort / pve down → les refresh ne s'installeront pas."""
+
+    last_seen: datetime | None = None
+    tunneld_active: bool = False
+    reachable_udids: list[str] = []
+    stale: bool = True                        # calculé côté status.py (heartbeat vieux)
+
+
 class SideloopStatus(BaseModel):
     """Photographie complète pour le dashboard Nexus."""
 
     generated_at: datetime
     account: AccountStatus
+    agent: AgentStatus = AgentStatus()        # heartbeat agent pve + tunneld
     devices: list[DeviceStatus] = []
     apps: list[AppStatus] = []
     last_refresh_at: datetime | None = None
