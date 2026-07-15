@@ -27,3 +27,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Embarquer le frontend (web/index.html) dans le package — sinon l'API renvoie
+# 500 "index.html does not exist" (setuptools n'inclut que les .py par défaut).
+[tool.setuptools.package-data]
+sideloop = ["web/*"]
