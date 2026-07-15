@@ -17,15 +17,56 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 SIGNED_DIR = Path("/mnt/media/sideloop-signed")
 PMD = "/root/.local/bin/pymobiledevice3"
+TUNNELD_UNIT = "sideloop-tunneld"
 # État d'install remonté vers k8s (lu par sideloop /api/status → Nexus).
 INSTALL_STATUS = SIGNED_DIR / "install-status.json"
 
+# Robustesse : le tunnel RemoteXPC (iOS 26/27, Wi-Fi) décroche parfois pendant
+# les gros transferts (~200 Mo) → on retente avec reconstruction du tunnel.
+MAX_ATTEMPTS = 3
+# Signatures d'erreur = drop de tunnel transitoire → ça vaut le coup de retenter.
+RETRYABLE = (
+    "terminated abruptly", "connectionterminated", "incompleteread",
+    "connection reset", "streamerror", "timeout", "device error",
+    "broken pipe", "eof", "connection refused",
+)
+
 _INFO_CACHE: dict[str, tuple[str, str]] = {}
+
+
+def restart_tunneld() -> None:
+    """Reconstruit tous les tunnels (le device réveillé sera redécouvert en mDNS)."""
+    subprocess.run(["systemctl", "restart", TUNNELD_UNIT], check=False)
+
+
+def tunnel_ready(udid: str, timeout: int = 12) -> bool:
+    """True si le tunnel du device répond (lockdown joignable)."""
+    try:
+        r = subprocess.run([PMD, "lockdown", "info", "--tunnel", udid],
+                           capture_output=True, text=True, timeout=timeout)
+        return '"DeviceName"' in r.stdout
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ensure_tunnel(udid: str, wait: int = 90) -> bool:
+    """Garantit un tunnel vivant : si muet, restart tunneld et attend qu'il revienne."""
+    if tunnel_ready(udid):
+        return True
+    print(f"    {udid}: tunnel muet → reconstruction (restart tunneld)")
+    restart_tunneld()
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        time.sleep(8)
+        if tunnel_ready(udid):
+            return True
+    return False
 
 
 def device_info(udid: str) -> tuple[str, str]:
@@ -50,23 +91,50 @@ def device_info(udid: str) -> tuple[str, str]:
     return name, ptype
 
 
-def install(ipa: Path, udid: str) -> tuple[bool, str]:
-    """Installe l'IPA sur un device. Renvoie (ok, erreur tronquée)."""
-    # --tunnel : passe par tunneld (Wi-Fi), PAS --udid (qui veut usbmux/USB).
+def _install_once(ipa: Path, udid: str) -> tuple[bool, str]:
+    """Une tentative d'install. --tunnel : passe par tunneld (Wi-Fi)."""
     try:
         r = subprocess.run([PMD, "apps", "install", "--tunnel", udid, str(ipa)],
                            capture_output=True, text=True, timeout=600)
         out = r.stdout + r.stderr
     except subprocess.TimeoutExpired:
-        print(f"    {udid}: ÉCHEC (timeout)")
-        return False, "timeout (device injoignable ?)"
-    ok = "Installation succeed" in out
-    print(f"    {udid}: {'OK' if ok else 'ÉCHEC'}")
-    if not ok:
-        tail = out[-300:]
-        print("     ", tail)
-        return False, tail.strip()[-200:]
-    return True, ""
+        return False, "timeout (transfert interrompu ?)"
+    if "Installation succeed" in out:
+        return True, ""
+    return False, out[-300:].strip()[-200:]
+
+
+def install(ipa: Path, udid: str) -> tuple[bool, str]:
+    """Installe l'IPA avec reprise : re-check du tunnel + jusqu'à MAX_ATTEMPTS essais.
+
+    Absorbe les drops de tunnel transitoires (iOS 26/27 sous gros transfert).
+    Renvoie (ok, dernière erreur)."""
+    last_err = "non tenté"
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        if not ensure_tunnel(udid):
+            last_err = "tunnel injoignable (device en veille / hors Wi-Fi ?)"
+            print(f"    {udid}: tunnel KO (essai {attempt}/{MAX_ATTEMPTS})")
+            time.sleep(5)
+            continue
+
+        ok, err = _install_once(ipa, udid)
+        if ok:
+            print(f"    {udid}: OK" + (f" (essai {attempt})" if attempt > 1 else ""))
+            return True, ""
+
+        last_err = err
+        retryable = (not err) or any(k in err.lower() for k in RETRYABLE)
+        will_retry = retryable and attempt < MAX_ATTEMPTS
+        print(f"    {udid}: ÉCHEC essai {attempt}/{MAX_ATTEMPTS}"
+              + (" → retry" if will_retry else ""))
+        if not will_retry:
+            break
+        # Drop de tunnel probable → on le reconstruit avant de retenter.
+        restart_tunneld()
+        time.sleep(8)
+
+    print(f"     {last_err}")
+    return False, last_err
 
 
 def write_status(sig: str, results: list[dict]) -> None:
