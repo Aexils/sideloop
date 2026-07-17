@@ -4,8 +4,13 @@
 [Unit]
 Description=sideloop install agent
 After=sideloop-tunneld.service
-Requires=sideloop-tunneld.service
+# Wants= (PAS Requires=) : le script fait `systemctl restart sideloop-tunneld`
+# pendant son run ; avec Requires=, ce restart se propage à l'agent lui-même
+# (SIGTERM en boucle → start-limit-hit de tunneld → Dependency failed).
+Wants=sideloop-tunneld.service
 
 [Service]
 Type=oneshot
+# Sans ça, Python bufferise stdout → aucun log dans journalctl avant la fin du run.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/sideloop/install_agent.py

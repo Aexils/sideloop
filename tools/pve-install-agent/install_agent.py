@@ -3,7 +3,8 @@
 
 Le CronJob k8s signe les IPA et écrit un manifest NFS ; cet agent les installe
 sur les iPhones par le tunnel Wi-Fi (accès L2/mDNS = capacité de pve, comme
-Tailscale). Idempotent : ne réinstalle pas un manifest déjà traité.
+Tailscale). Idempotent PAR DEVICE : un device servi avec succès il y a moins de
+FRESH_HOURS n'est pas retenté ; un device absent ne bloque jamais les autres.
 
 Prérequis pve (one-time) :
   * usbmuxd + pymobiledevice3 (voir /opt/grandslam) ;
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SIGNED_DIR = Path("/mnt/media/sideloop-signed")
@@ -30,6 +31,11 @@ TUNNELD_URL = "http://127.0.0.1:49151/"
 INSTALL_STATUS = SIGNED_DIR / "install-status.json"
 # Battement de cœur de l'agent : prouve à Nexus que l'agent pve + tunneld vivent.
 HEARTBEAT = SIGNED_DIR / "agent-heartbeat.json"
+# Suivi PAR DEVICE : dernier install OK par "bundle_id:udid". Un device servi il y a
+# moins de FRESH_HOURS est skippé (cert 7 j → 48 h laissent 5 j de marge), les autres
+# sont tentés individuellement — remplace l'ancien marqueur .done-<sig> tout-ou-rien.
+INSTALLED_STATE = SIGNED_DIR / "installed-state.json"
+FRESH_HOURS = 48
 
 # Robustesse : le tunnel RemoteXPC (iOS 26/27, Wi-Fi) décroche parfois pendant
 # les gros transferts (~200 Mo) → on retente avec reconstruction du tunnel.
@@ -89,18 +95,25 @@ def tunnel_ready(udid: str, timeout: int = 12) -> bool:
         return False
 
 
-def ensure_tunnel(udid: str, wait: int = 90) -> bool:
-    """Garantit un tunnel vivant : si muet, restart tunneld et attend qu'il revienne."""
-    if tunnel_ready(udid):
-        return True
-    print(f"    {udid}: tunnel muet → reconstruction (restart tunneld)")
+def reachable_udids(targets: set[str]) -> set[str]:
+    """Sous-ensemble des UDID cibles réellement joignables (tunnel actif).
+
+    Fait AU PLUS un restart de tunneld par run (si des cibles manquent) pour laisser
+    le mDNS redécouvrir les appareils réveillés, puis attend brièvement. Remplace
+    l'ancien ensure_tunnel() qui restartait tunneld PAR device (cassant au passage
+    les tunnels des autres) et attendait 90 s × 3 sur chaque appareil endormi."""
+    have = set(_tunneld_udids())
+    if targets <= have:
+        return set(targets)
+    print("    tunnels incomplets → une seule reconstruction tunneld (mDNS)")
     restart_tunneld()
-    deadline = time.time() + wait
+    deadline = time.time() + 45
     while time.time() < deadline:
         time.sleep(8)
-        if tunnel_ready(udid):
-            return True
-    return False
+        have = set(_tunneld_udids())
+        if targets <= have:
+            break
+    return targets & have
 
 
 def device_info(udid: str) -> tuple[str, str]:
@@ -139,18 +152,14 @@ def _install_once(ipa: Path, udid: str) -> tuple[bool, str]:
 
 
 def install(ipa: Path, udid: str) -> tuple[bool, str]:
-    """Installe l'IPA avec reprise : re-check du tunnel + jusqu'à MAX_ATTEMPTS essais.
+    """Installe l'IPA sur un device DÉJÀ confirmé joignable (voir reachable_udids).
 
-    Absorbe les drops de tunnel transitoires (iOS 26/27 sous gros transfert).
+    Garde une reprise courte pour absorber un drop de tunnel transitoire pendant le
+    gros transfert (iOS 26/27, ~300 Mo Wi-Fi), mais ne reconstruit le tunnel que
+    s'il est réellement tombé — au lieu de restarter tunneld à chaque essai.
     Renvoie (ok, dernière erreur)."""
     last_err = "non tenté"
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        if not ensure_tunnel(udid):
-            last_err = "tunnel injoignable (device en veille / hors Wi-Fi ?)"
-            print(f"    {udid}: tunnel KO (essai {attempt}/{MAX_ATTEMPTS})")
-            time.sleep(5)
-            continue
-
         ok, err = _install_once(ipa, udid)
         if ok:
             print(f"    {udid}: OK" + (f" (essai {attempt})" if attempt > 1 else ""))
@@ -163,12 +172,53 @@ def install(ipa: Path, udid: str) -> tuple[bool, str]:
               + (" → retry" if will_retry else ""))
         if not will_retry:
             break
-        # Drop de tunnel probable → on le reconstruit avant de retenter.
-        restart_tunneld()
-        time.sleep(8)
+        # Reprise ciblée : ne reconstruire tunneld que si LE tunnel est tombé.
+        if not tunnel_ready(udid):
+            restart_tunneld()
+            time.sleep(8)
+        else:
+            time.sleep(3)
 
     print(f"     {last_err}")
     return False, last_err
+
+
+def load_state() -> dict:
+    """installed-state.json : {"bundle_id:udid": {"at": iso-utc, "sig": str}} (installs OK)."""
+    try:
+        return json.loads(INSTALLED_STATE.read_text())
+    except Exception:  # noqa: BLE001 — absent/corrompu = tout est à refaire
+        return {}
+
+
+def save_state(state: dict) -> None:
+    tmp = INSTALLED_STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(INSTALLED_STATE)
+
+
+def freshly_installed(state: dict, bundle_id: str, udid: str) -> bool:
+    """True si ce device a reçu cette app avec succès il y a moins de FRESH_HOURS."""
+    rec = state.get(f"{bundle_id}:{udid}")
+    if not rec:
+        return False
+    try:
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(rec["at"])
+    except Exception:  # noqa: BLE001 — timestamp illisible = considérer périmé
+        return False
+    return age < timedelta(hours=FRESH_HOURS)
+
+
+def previous_results() -> dict[str, dict]:
+    """Derniers résultats de install-status.json indexés "bundle_id:udid".
+
+    Les devices skippés (fraîchement servis) gardent ainsi leur dernier état
+    dans le statut remonté à Nexus au lieu d'en disparaître."""
+    try:
+        return {f"{r['bundle_id']}:{r['udid']}": r
+                for r in json.loads(INSTALL_STATUS.read_text())["results"]}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def write_status(sig: str, results: list[dict]) -> None:
@@ -190,42 +240,81 @@ def main() -> int:
         print("Aucun manifest.")
         return 0
     data = json.loads(manifest.read_text())
-    # empreinte pour ne pas retraiter le même manifest
+    # empreinte du manifest (traçabilité dans install-status.json)
     sig = hashlib.sha256(manifest.read_bytes()).hexdigest()[:16]
-    done = SIGNED_DIR / f".done-{sig}"
-    if done.exists():
-        print("Manifest déjà installé.")
-        return 0
 
+    state = load_state()
+    results = previous_results()
     all_ok = True
-    results: list[dict] = []
+    attempted = 0
+
+    # Joignabilité pré-calculée UNE fois par run (union des devices à installer) :
+    # évite de restarter tunneld par-device et d'attendre 90 s sur chaque endormi.
+    targets = {u for e in data.get("entries", [])
+               for u in e["device_udids"]
+               if not freshly_installed(state, e["bundle_id"], u)}
+    reach = reachable_udids(targets) if targets else set()
+    absent = targets - reach
+    if absent:
+        print(f"    {len(absent)} device(s) injoignable(s) (hors Wi-Fi/verrouillé) "
+              f"— skip rapide, retry au prochain run")
+
     for e in data.get("entries", []):
         ipa = SIGNED_DIR / e["signed_ipa"]
+        todo = [u for u in e["device_udids"]
+                if not freshly_installed(state, e["bundle_id"], u)]
+        if len(todo) < len(e["device_udids"]):
+            print(f"[{e['name']}] {len(e['device_udids']) - len(todo)} device(s) "
+                  f"servis il y a < {FRESH_HOURS} h — skip")
+        if not todo:
+            continue
         if not ipa.exists():
             print(f"[{e['name']}] IPA absente: {ipa}")
             all_ok = False
-            for udid in e["device_udids"]:
+            for udid in todo:
                 name, ptype = device_info(udid)
-                results.append({"bundle_id": e["bundle_id"], "udid": udid, "ok": False,
-                                "at": datetime.now(timezone.utc).isoformat(),
-                                "device_name": name, "product_type": ptype,
-                                "error": "IPA signée absente"})
+                results[f"{e['bundle_id']}:{udid}"] = {
+                    "bundle_id": e["bundle_id"], "udid": udid, "ok": False,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "device_name": name, "product_type": ptype,
+                    "error": "IPA signée absente"}
             continue
-        print(f"[{e['name']}] {e['bundle_id']} → {len(e['device_udids'])} device(s)")
-        for udid in e["device_udids"]:
+        print(f"[{e['name']}] {e['bundle_id']} → {len(todo)} device(s)")
+        for udid in todo:
+            if udid not in reach:
+                # Injoignable : statut sans tenter (pas de thrash, pas de lockdown 30 s).
+                # On réutilise le nom déjà connu plutôt que d'interroger l'appareil absent.
+                prev = results.get(f"{e['bundle_id']}:{udid}", {})
+                results[f"{e['bundle_id']}:{udid}"] = {
+                    "bundle_id": e["bundle_id"], "udid": udid, "ok": False,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "device_name": prev.get("device_name", ""),
+                    "product_type": prev.get("product_type", ""),
+                    "error": "injoignable (hors Wi-Fi / verrouillé)"}
+                all_ok = False
+                continue
+            attempted += 1
             ok, err = install(ipa, udid)
             all_ok &= ok
             name, ptype = device_info(udid)
-            results.append({"bundle_id": e["bundle_id"], "udid": udid, "ok": ok,
-                            "at": datetime.now(timezone.utc).isoformat(),
-                            "device_name": name, "product_type": ptype, "error": err})
+            results[f"{e['bundle_id']}:{udid}"] = {
+                "bundle_id": e["bundle_id"], "udid": udid, "ok": ok,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "device_name": name, "product_type": ptype, "error": err}
+            if ok:
+                state[f"{e['bundle_id']}:{udid}"] = {
+                    "at": datetime.now(timezone.utc).isoformat(), "sig": sig}
+                save_state(state)  # au fil de l'eau : un run interrompu garde ses acquis
 
     # On remonte TOUJOURS l'état (succès comme échec) pour Nexus.
-    write_status(sig, results)
+    write_status(sig, list(results.values()))
 
-    if all_ok:
-        done.write_text(manifest.read_text())
-        print("Tous installés — marqué done.")
+    if not targets:
+        print("Rien à faire — tous les devices sont à jour.")
+    elif not attempted:
+        print("Aucun device joignable ce run — retry au prochain passage.")
+    elif all_ok:
+        print("Tous les devices tentés sont installés.")
     return 0 if all_ok else 1
 
 

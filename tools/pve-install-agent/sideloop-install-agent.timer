@@ -1,6 +1,7 @@
 # /etc/systemd/system/sideloop-install-agent.timer
-# Vérifie le manifest toutes les 30 min. L'agent est idempotent (marqueur .done)
-# → n'installe que les nouvelles IPA, et seulement quand l'iPhone est joignable.
+# Vérifie le manifest toutes les 30 min. L'agent est idempotent PAR DEVICE
+# (installed-state.json : un device servi il y a < 48 h est skippé) → il n'installe
+# que les devices en retard, et seulement quand l'iPhone est joignable.
 [Unit]
 Description=sideloop install agent (toutes les 30 min)
 
