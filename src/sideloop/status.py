@@ -158,11 +158,19 @@ def build_status() -> SideloopStatus:
         if last_err:
             alerts.append(f"{app.name} : dernière signature en échec ({last_err[:80]}).")
 
-    # Alerte install : un device en échec sur une app fraîchement signée
+    # Alerte install : seulement si CRITIQUE. Un échec d'install sur une app fraîchement
+    # signée = appareil juste endormi/verrouillé, repris au prochain run → PAS une alarme
+    # (le statut par-device est déjà visible dans les cartes d'app). Ça ne devient une
+    # alerte que si le certificat expire bientôt (ou a expiré) ET qu'un appareil n'a
+    # toujours pas reçu l'install : là, le temps presse vraiment pour agir.
     for a in app_statuses:
-        for d in a.installs:
-            if d.last_ok is False:
-                alerts.append(f"{a.name} : install échouée sur {d.udid[:12]}…")
+        if a.status not in ("expiring", "expired"):
+            continue
+        pending = [d.name or f"{d.udid[:12]}…" for d in a.installs if d.last_ok is not True]
+        if pending:
+            etat = "cert EXPIRÉ" if a.status == "expired" else "cert bientôt expiré"
+            alerts.append(f"{a.name} : {etat}, pas encore installée sur "
+                          f"{', '.join(pending)}")
 
     # Alerte login (2FA cassé) : dernier run avec login KO
     last_run = runs[-1] if runs else None
