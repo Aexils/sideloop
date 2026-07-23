@@ -96,45 +96,60 @@ def tunnel_ready(udid: str, timeout: int = 12) -> bool:
 
 
 def reachable_udids(targets: set[str]) -> set[str]:
-    """Sous-ensemble des UDID cibles réellement joignables (tunnel actif).
+    """Sous-ensemble des UDID cibles RÉELLEMENT joignables (tunnel qui répond).
+
+    ⚠ tunneld garde des entrées PÉRIMÉES : un device endormi/hors Wi-Fi reste dans
+    sa liste de clés alors que son tunnel ne répond plus (lockdown timeout). On ne
+    peut donc PAS se fier à _tunneld_udids() seul → on SONDE lockdown pour de vrai
+    (tunnel_ready) sur chaque candidat. Sinon on croit un device joignable, on tente
+    l'install, elle hangue jusqu'au timeout, et le heartbeat ment à Nexus.
 
     Fait AU PLUS un restart de tunneld par run (si des cibles manquent) pour laisser
-    le mDNS redécouvrir les appareils réveillés, puis attend brièvement. Remplace
-    l'ancien ensure_tunnel() qui restartait tunneld PAR device (cassant au passage
-    les tunnels des autres) et attendait 90 s × 3 sur chaque appareil endormi."""
-    have = set(_tunneld_udids())
+    le mDNS redécouvrir les appareils réveillés, puis re-sonde."""
+    def probe(cands: set[str]) -> set[str]:
+        return {u for u in cands if tunnel_ready(u)}
+
+    have = probe(targets & set(_tunneld_udids()))
     if targets <= have:
-        return set(targets)
-    print("    tunnels incomplets → une seule reconstruction tunneld (mDNS)")
+        return have
+    print("    tunnels incomplets/périmés → une reconstruction tunneld (mDNS)")
     restart_tunneld()
     deadline = time.time() + 45
     while time.time() < deadline:
         time.sleep(8)
-        have = set(_tunneld_udids())
+        have = probe(targets & set(_tunneld_udids()))
         if targets <= have:
             break
-    return targets & have
+    return have
 
 
 def device_info(udid: str) -> tuple[str, str]:
     """(DeviceName, ProductType) de l'appareil via le tunnel. Caché par run.
 
     ProductType (ex. iPhone16,1) est mappé en nom commercial côté sideloop
-    (status.py). Best-effort : ("", "") si échec → le dashboard retombe sur l'UDID."""
+    (status.py). Best-effort : ("", "") si échec → le dashboard retombe sur l'UDID.
+    Un lockdown ponctuellement lent (device qui vient de recevoir un gros transfert)
+    renvoyait "" → nom gelé à l'UDID : on retente une fois, et on ne CACHE qu'un
+    résultat utile (sinon un "" transitoire condamnait le nom pour tout le run)."""
     if udid in _INFO_CACHE:
         return _INFO_CACHE[udid]
     name, ptype = "", ""
-    try:
-        r = subprocess.run([PMD, "lockdown", "info", "--tunnel", udid],
-                           capture_output=True, text=True, timeout=30)
-        for line in r.stdout.splitlines():
-            if '"DeviceName"' in line:
-                name = line.split(":", 1)[1].strip().strip('",')
-            elif '"ProductType"' in line:
-                ptype = line.split(":", 1)[1].strip().strip('",')
-    except Exception:  # noqa: BLE001 — best-effort, jamais bloquant
-        pass
-    _INFO_CACHE[udid] = (name, ptype)
+    for attempt in range(2):
+        try:
+            r = subprocess.run([PMD, "lockdown", "info", "--tunnel", udid],
+                               capture_output=True, text=True, timeout=30)
+            for line in r.stdout.splitlines():
+                if '"DeviceName"' in line:
+                    name = line.split(":", 1)[1].strip().strip('",')
+                elif '"ProductType"' in line:
+                    ptype = line.split(":", 1)[1].strip().strip('",')
+        except Exception:  # noqa: BLE001 — best-effort, jamais bloquant
+            pass
+        if name or ptype:
+            break
+        time.sleep(2)
+    if name or ptype:
+        _INFO_CACHE[udid] = (name, ptype)  # ne fige QUE les résultats exploitables
     return name, ptype
 
 
@@ -197,10 +212,19 @@ def save_state(state: dict) -> None:
     tmp.replace(INSTALLED_STATE)
 
 
-def freshly_installed(state: dict, bundle_id: str, udid: str) -> bool:
-    """True si ce device a reçu cette app avec succès il y a moins de FRESH_HOURS."""
+def freshly_installed(state: dict, bundle_id: str, udid: str, sig: str) -> bool:
+    """True si ce device a reçu CETTE signature avec succès il y a moins de FRESH_HOURS.
+
+    ⚠ BUG HISTORIQUE : on ne comparait que le TEMPS, jamais le sig — alors qu'un
+    refresh produit un NOUVEL IPA (sig différent). Résultat : après re-signature,
+    l'agent voyait "installé il y a < 48 h" et skippait → la version fraîche n'était
+    JAMAIS poussée (Nexus disait "signé", le device ne recevait rien). Un sig
+    différent force donc la réinstallation, même à < 48 h : c'est tout l'objet
+    d'un refresh. Le record stockait déjà `sig` (il n'était juste jamais relu)."""
     rec = state.get(f"{bundle_id}:{udid}")
     if not rec:
+        return False
+    if rec.get("sig") != sig:      # re-signé depuis → doit être réinstallé
         return False
     try:
         age = datetime.now(timezone.utc) - datetime.fromisoformat(rec["at"])
@@ -252,7 +276,7 @@ def main() -> int:
     # évite de restarter tunneld par-device et d'attendre 90 s sur chaque endormi.
     targets = {u for e in data.get("entries", [])
                for u in e["device_udids"]
-               if not freshly_installed(state, e["bundle_id"], u)}
+               if not freshly_installed(state, e["bundle_id"], u, sig)}
     reach = reachable_udids(targets) if targets else set()
     absent = targets - reach
     if absent:
@@ -262,7 +286,7 @@ def main() -> int:
     for e in data.get("entries", []):
         ipa = SIGNED_DIR / e["signed_ipa"]
         todo = [u for u in e["device_udids"]
-                if not freshly_installed(state, e["bundle_id"], u)]
+                if not freshly_installed(state, e["bundle_id"], u, sig)]
         if len(todo) < len(e["device_udids"]):
             print(f"[{e['name']}] {len(e['device_udids']) - len(todo)} device(s) "
                   f"servis il y a < {FRESH_HOURS} h — skip")
@@ -297,6 +321,11 @@ def main() -> int:
             ok, err = install(ipa, udid)
             all_ok &= ok
             name, ptype = device_info(udid)
+            # Fallback : ne pas écraser un nom déjà connu par un "" (lockdown lent
+            # juste après le gros transfert) → le device garderait l'UDID à l'écran.
+            prev = results.get(f"{e['bundle_id']}:{udid}", {})
+            name = name or prev.get("device_name", "")
+            ptype = ptype or prev.get("product_type", "")
             results[f"{e['bundle_id']}:{udid}"] = {
                 "bundle_id": e["bundle_id"], "udid": udid, "ok": ok,
                 "at": datetime.now(timezone.utc).isoformat(),
