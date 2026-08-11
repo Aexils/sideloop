@@ -53,8 +53,10 @@ spec:
               volumeMounts:
                 - name: data
                   mountPath: /data
+                  subPath: {{ .Values.persistence.ipas.subPath }}
                 - name: signed
                   mountPath: /signed
+                  subPath: {{ .Values.persistence.signed.subPath }}
               resources:
                 {{- toYaml .Values.refresh.resources | nindent 16 }}
           volumes:

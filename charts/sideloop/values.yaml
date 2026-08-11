@@ -50,13 +50,19 @@ api:
 persistence:
   storageClassName: ""             # anisette-state : local-path (défaut)
   nfsServer: "10.10.10.1"          # pve sur vmbr0 (exporte déjà /mnt/media)
+  # /mnt/media est du NTFS (ntfs-3g/FUSE). nfsd ne sait pas encoder de file
+  # handle vers un SOUS-répertoire d'un FUSE : monter /mnt/media/sideloop-*
+  # directement donne un ESTALE définitif dès que le disque est remonté (cf.
+  # panne du 2026-08-10). On monte donc la RACINE exportée + subPath, comme
+  # audiobookshelf. Ne pas remettre le sous-répertoire dans `path`.
+  nfsPath: /mnt/media
   # IPAs sources + state.json, sur le DD externe 1To.
   ipas:
-    path: /mnt/media/sideloop-ipas
+    subPath: sideloop-ipas
     size: 20Gi
   # IPAs signées + manifest, sur le DD externe (lues par l'agent pve).
   signed:
-    path: /mnt/media/sideloop-signed
+    subPath: sideloop-signed
     size: 20Gi
 
 route:
