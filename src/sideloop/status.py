@@ -172,10 +172,32 @@ def build_status() -> SideloopStatus:
             alerts.append(f"{a.name} : {etat}, pas encore installée sur "
                           f"{', '.join(pending)}")
 
-    # Alerte login (2FA cassé) : dernier run avec login KO
+    # Alerte login : on affiche la CAUSE remontée par le refresh (anisette figée,
+    # compte, réseau…) au lieu d'accuser la 2FA par défaut — le message générique
+    # a masqué 6 jours une provision ADI périmée (2026-09-10).
+    #
+    # Elle monte en pression toute seule : série d'échecs + temps restant avant la
+    # 1re expiration. Un login cassé condamne TOUTES les apps à J+7, donc l'alerte
+    # doit être lisible dès le 1er échec, pas quand le compte à rebours est fini.
     last_run = runs[-1] if runs else None
     if last_run is not None and not last_run.login_ok:
-        alerts.append("Login Apple en échec (2FA à refaire ? cf. bootstrap anisette).")
+        streak = 0
+        for run in reversed(runs):
+            if run.login_ok:
+                break
+            streak += 1
+        cause = last_run.login_error.strip() or "cause non remontée (relancer le CronJob)"
+        depuis = f"{streak} run{'s' if streak > 1 else ''} d'affilée"
+        soonest = [a.expires_in_sec for a in app_statuses if a.expires_in_sec is not None]
+        if soonest and min(soonest) > 0:
+            h = max(0, min(soonest) // 3600)
+            marge = f" — plus aucune signature possible, 1re expiration dans {h} h"
+        elif soonest:
+            marge = " — signatures DÉJÀ expirées"
+        else:
+            marge = ""
+        # En tête de liste : c'est la cause, les apps expirées n'en sont que l'effet.
+        alerts.insert(0, f"Login Apple en échec ({depuis}){marge}. {cause}")
 
     # Santé de l'agent pve : heartbeat périmé (> 40 min ; le timer tourne aux 30 min)
     # = agent mort / pve down → plus aucune install possible.

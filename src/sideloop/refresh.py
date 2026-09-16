@@ -24,14 +24,24 @@ def run() -> int:
         return 2
 
     now = datetime.now(timezone.utc)
+
+    # Sonde l'anisette AVANT de parler à Apple : une provision ADI périmée fait
+    # répondre 503 à gsa.apple.com, ce qui ressort en "Invalid file" incompréhensible.
+    # Mieux vaut nommer la panne que la déduire (cf. 2026-09-10).
+    stale = signing.probe_anisette(settings.anisette_url)
+    if stale:
+        print(f"[refresh] ÉCHEC anisette: {stale}", file=sys.stderr)
+        storage.append_run(RunRecord(at=now, login_ok=False, login_error=stale, results=[]))
+        return 3
+
     print(f"[refresh] login Apple (anisette {settings.anisette_url})…")
     try:
         session = signing.login(settings.apple_id, settings.apple_password,
                                 settings.anisette_url, settings.team_id)
     except Exception as e:  # noqa: BLE001
         print(f"[refresh] ÉCHEC login: {e}", file=sys.stderr)
-        # On historise l'échec de login (= alerte 2FA côté Nexus) avant de sortir.
-        storage.append_run(RunRecord(at=now, login_ok=False, results=[]))
+        # On historise l'échec AVEC sa cause (affichée telle quelle par Nexus).
+        storage.append_run(RunRecord(at=now, login_ok=False, login_error=str(e), results=[]))
         return 3
     print(f"[refresh] connecté (team {session.team_id}, {len(settings.devices)} device(s)).")
 

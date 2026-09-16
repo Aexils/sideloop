@@ -54,6 +54,7 @@ class RunRecord(BaseModel):
 
     at: datetime
     login_ok: bool = True          # le login Apple (2FA-free) a-t-il tenu ?
+    login_error: str = ""          # cause exacte si login_ok is False (≠ "2FA ?")
     results: list[RunAppResult] = []
 
     @property

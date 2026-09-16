@@ -22,6 +22,7 @@ import hmac
 import plistlib
 import subprocess
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -94,6 +95,41 @@ def _loads_plist(data: bytes) -> dict:
         return plistlib.loads(_PLIST_HEADER + data)
 
 
+# Message posé quand la provision ADI est morte — repris tel quel par le
+# dashboard, donc il doit dire QUOI faire, pas juste "2FA ?".
+ANISETTE_STALE_MSG = (
+    "anisette : OTP ADI FIGÉ (X-Apple-I-MD identique sur {n} appels) — la "
+    "provision est périmée, Apple répond 503. Re-provisionner le serveur "
+    "(= une 2FA SMS à refaire), cf. tools/apple_auth."
+)
+
+
+def probe_anisette(anisette_url: str, attempts: int = 3, delay: float = 1.0) -> str:
+    """Diagnostic de l'anisette AVANT de parler à Apple. "" = saine.
+
+    `X-Apple-I-MD` est un mot de passe à usage unique : il DOIT changer à chaque
+    appel. Figé = la session ADI est morte (provision périmée / identité gelée),
+    et gsa.apple.com répondra 503 à toute requête signée avec. Le serveur, lui,
+    continue de répondre 200 : aucune sonde k8s ne peut voir ça.
+    """
+    seen: set[str] = set()
+    for i in range(attempts):
+        if i:
+            time.sleep(delay)
+        try:
+            r = requests.get(anisette_url, timeout=10)
+            r.raise_for_status()
+            seen.add(r.json().get("X-Apple-I-MD", ""))
+        except Exception as e:  # noqa: BLE001
+            return f"anisette injoignable ({anisette_url}) : {type(e).__name__}: {e}"
+    if seen == {""}:
+        return (f"anisette ({anisette_url}) ne renvoie pas de X-Apple-I-MD : "
+                "réponse inattendue, serveur incompatible ?")
+    if attempts > 1 and len(seen) == 1:
+        return ANISETTE_STALE_MSG.format(n=attempts)
+    return ""
+
+
 def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Session:
     """Auth complète → Session utilisable pour le portail dev.
 
@@ -101,11 +137,22 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
     (2FA fait une fois hors-ligne). Un login sur machine non-trustée lèvera.
     """
     anisette = Anisette(anisette_url)
-    spd = authenticate(apple_id, password, anisette)
+    try:
+        spd = authenticate(apple_id, password, anisette)
+    except plistlib.InvalidFileException as e:
+        # gsa.apple.com a renvoyé du HTML (typiquement 503) ; grandslam essaie de
+        # le parser en plist et lâche un "Invalid file" illisible. On remonte la
+        # VRAIE cause : 9 fois sur 10 l'anisette, pas le compte.
+        raise RuntimeError(
+            "gsa.apple.com n'a pas renvoyé un plist (requête refusée, typiquement "
+            "503). " + (probe_anisette(anisette_url)
+                        or "anisette saine — vérifier le compte / mot de passe.")
+        ) from e
     if not isinstance(spd, dict) or "adsid" not in spd:
         raise RuntimeError(
             "Login GrandSlam échoué (2FA requis ? anisette non trustée ?). "
-            "L'anisette doit être la machine trustée une fois par SMS."
+            "L'anisette doit être la machine trustée une fois par SMS. "
+            + (probe_anisette(anisette_url) or "")
         )
     gs_token = _fetch_app_token(anisette, spd, XCODE_APP)
     return Session(anisette=anisette, adsid=spd["adsid"], gs_token=gs_token, team_id=team_id)
