@@ -73,8 +73,16 @@ spec:
                 else
                   echo "seed-identity: $f déjà sur le PVC, conservé"
                 fi
-                chmod 664 "/config/$f"
               done
+              # Le serveur tourne en uid/gid 1000 (Alcoholic) et doit pouvoir
+              # RÉÉCRIRE adi.pb/device.json et créer des fichiers ici quand il
+              # re-provisionne. On le pose explicitement : sur un emptyDir le bit
+              # setgid posé par fsGroup faisait hériter le gid aux fichiers copiés
+              # par root, sur un PVC non — les fichiers restaient root:root 664,
+              # et le serveur crashait en "Permission denied" sur device.json.
+              chown -R 1000:1000 /config
+              chmod 775 /config /config/lib
+              chmod 664 /config/adi.pb /config/device.json
           env:
             - name: FORCE_RESEED
               value: {{ .Values.anisette.forceReseed | default false | quote }}
