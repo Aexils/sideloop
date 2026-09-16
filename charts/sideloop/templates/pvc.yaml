@@ -26,9 +26,10 @@ spec:
   resources: {requests: {storage: {{ .Values.persistence.ipas.size }}}}
 {{- if .Values.anisette.enabled }}
 ---
-# État de la « machine » anisette EN POD = l'identité TRUSTÉE (adi.pb). ⚠ Restaurée
-# au bootstrap depuis pve — NE PAS reprovisionner (re-2FA). (Par défaut anisette
-# tourne sur pve, ce PVC n'est donc pas créé.)
+# Répertoire de conf anisette COMPLET : identité TRUSTÉE (adi.pb + device.json)
+# ET libs ADI (lib/*.so). ⚠ C'est la source de vérité de l'identité : le serveur
+# la re-provisionne et réécrit adi.pb ici. Perdre ce PVC = une 2FA SMS à refaire.
+# Le Secret `identitySecret` n'est qu'une semence de secours (cf. anisette.yaml).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

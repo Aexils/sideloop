@@ -56,6 +56,42 @@ Dockerfile             image : zsign (build) + grandslam patché + notre code
 
 Le déploiement/mise à jour se fait en **GitOps via ArgoCD** (repo homelab).
 
+## L'identité anisette est VIVANTE (ne pas la figer)
+
+`adi.pb` n'est pas une constante : le serveur anisette re-provisionne sa session ADI
+et **réécrit le fichier**. Elle vit donc sur le PVC `anisette-state`, qui monte tout
+`~/.config/anisette-v3/`. Le Secret `anisette-identity` n'est qu'une **semence de
+secours**, posée uniquement si le PVC est vide (`anisette.forceReseed: true` pour
+forcer une restauration).
+
+> Panne du **2026-09-10** : l'identité était reseedée depuis le Secret sur un
+> `emptyDir` à chaque start, donc gelée. Sa provision a périmé ~30 j après le start du
+> pod, l'OTP `X-Apple-I-MD` a cessé de tourner, `gsa.apple.com` a répondu **503**, et
+> les apps sont mortes 7 j plus tard sans que l'alerte (« 2FA à refaire ? ») ne le dise.
+
+**Diagnostic en 10 s** — l'OTP doit changer à chaque appel :
+
+```sh
+kubectl -n sideloop port-forward deploy/anisette 6969:6969 &
+for i in 1 2 3; do curl -s localhost:6969/ | jq -r '."X-Apple-I-MD"'; sleep 1; done
+# 3 valeurs identiques = provision morte (c'est ce que fait `signing.probe_anisette`)
+```
+
+**Remise en route** (coûte **une 2FA SMS**, inévitable). L'ordre compte : tant que le
+Secret contient l'ancienne identité, tout redémarrage la re-sème (elle n'est semée que
+si le PVC est vide) — donc on re-scelle **avant** de repasser `reprovision` à `false`.
+
+1. `anisette.reprovision: true` dans les values homelab → sync ArgoCD. L'initContainer
+   supprime l'identité et le serveur en provisionne une neuve ;
+2. refaire le **2FA SMS** contre ce pod (flux de `tools/apple_auth`) pour truster la
+   nouvelle machine sur le compte ;
+3. récupérer `adi.pb` + `device.json` du PVC et les **re-sceller** (`kubeseal`) dans
+   `anisette-identity` ;
+4. repasser `anisette.reprovision: false` → sync. Le Secret est désormais une semence
+   valide si le PVC est perdu ;
+5. `kubectl -n sideloop create job resign-now --from=cronjob/sideloop-refresh`, puis
+   réinstaller sur les devices (l'agent pve le fait au prochain passage du timer).
+
 ## Limites du compte Apple gratuit
 
 3 apps actives · 10 App IDs/semaine · cert 7 jours (d'où le CronJob à ~5 j).

@@ -1,7 +1,12 @@
 {{- if .Values.anisette.enabled }}
 # Serveur anisette v3 (image officielle Dadoum). Fournit les jetons ADI qui
-# font croire à Apple qu'on signe depuis un Mac de confiance. Volume propre
-# pour la persistance de la « machine » anisette (stabilité = moins de 2FA).
+# font croire à Apple qu'on signe depuis un Mac de confiance.
+#
+# ⚠ L'identité ADI (adi.pb) est une session VIVANTE, pas une constante : le
+# serveur la re-provisionne périodiquement et RÉÉCRIT le fichier. Elle doit donc
+# vivre sur le PVC. La figer (emptyDir reseedé à chaque start) la fait périmer —
+# l'OTP `X-Apple-I-MD` cesse de tourner et gsa.apple.com répond 503 (panne du
+# 2026-09-10, apps non re-signées pendant 7 j).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,6 +16,9 @@ metadata:
     app.kubernetes.io/part-of: sideloop
 spec:
   replicas: 1
+  # PVC RWO + identité mutable : jamais deux pods sur le même adi.pb.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: anisette
@@ -20,21 +28,64 @@ spec:
         app.kubernetes.io/name: anisette
         app.kubernetes.io/part-of: sideloop
     spec:
-      {{- if .Values.anisette.identitySecret }}
-      # Identité anisette auto-réparante : un initContainer réinjecte adi.pb +
-      # device.json (depuis un SealedSecret) à CHAQUE démarrage → l'identité
-      # "machine de confiance" survit à tout reschedule/redémarrage = zéro re-2FA.
-      # (fsGroup 1000 : l'emptyDir doit être inscriptible par l'user Alcoholic.)
+      # fsGroup 1000 : le PVC doit être inscriptible par l'user Alcoholic, sinon
+      # le serveur ne PEUT PAS réécrire adi.pb quand il re-provisionne.
       securityContext:
         fsGroup: 1000
+      {{- if or .Values.anisette.identitySecret .Values.anisette.reprovision }}
       initContainers:
+        # Trois modes, du plus courant au plus rare :
+        #   défaut          — sème adi.pb + device.json UNIQUEMENT s'ils sont absents
+        #                     du PVC. Une identité présente est CONSERVÉE : c'est elle
+        #                     que le serveur re-provisionne et tient à jour.
+        #   forceReseed     — écrase par le Secret (restauration d'une identité connue-bonne).
+        #   reprovision     — SUPPRIME l'identité : le serveur en fabrique une neuve.
+        #                     Coûte une 2FA SMS. À remettre à false juste après, sinon
+        #                     chaque démarrage repart de zéro (= 2FA à chaque fois).
         - name: seed-identity
           image: busybox:1.37
-          command: ["sh", "-c", "cp -f /seed/adi.pb /seed/device.json /config/ && chmod 664 /config/adi.pb /config/device.json"]
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /config/lib
+              # Migration depuis l'ancien montage, qui plaçait le CONTENU de
+              # lib/ à la racine du PVC : les .so redescendent d'un cran.
+              for so in libCoreADI.so libstoreservicescore.so; do
+                if [ -f "/config/$so" ]; then mv -f "/config/$so" /config/lib/; fi
+              done
+              if [ "${REPROVISION:-false}" = "true" ]; then
+                rm -f /config/adi.pb /config/device.json
+                echo "seed-identity: REPROVISION — identité supprimée, le serveur va"
+                echo "seed-identity: en provisionner une neuve (2FA SMS à refaire,"
+                echo "seed-identity: puis re-sceller le Secret et repasser à false)."
+                exit 0
+              fi
+              if [ ! -d /seed ]; then
+                echo "seed-identity: pas de Secret monté, rien à semer"
+                exit 0
+              fi
+              for f in adi.pb device.json; do
+                if [ ! -f "/config/$f" ] || [ "${FORCE_RESEED:-false}" = "true" ]; then
+                  cp -f "/seed/$f" "/config/$f"
+                  echo "seed-identity: $f (re)posé depuis le Secret"
+                else
+                  echo "seed-identity: $f déjà sur le PVC, conservé"
+                fi
+                chmod 664 "/config/$f"
+              done
+          env:
+            - name: FORCE_RESEED
+              value: {{ .Values.anisette.forceReseed | default false | quote }}
+            - name: REPROVISION
+              value: {{ .Values.anisette.reprovision | default false | quote }}
           volumeMounts:
+            {{- if .Values.anisette.identitySecret }}
             - name: identity-seed
               mountPath: /seed
-            - name: anisette-config
+            {{- end }}
+            - name: anisette-state
               mountPath: /config
       {{- end }}
       containers:
@@ -44,18 +95,14 @@ spec:
           ports:
             - containerPort: 6969
           volumeMounts:
-            {{- if .Values.anisette.identitySecret }}
-            - name: anisette-config
-              mountPath: /home/Alcoholic/.config/anisette-v3
-            {{- end }}
+            # TOUT le répertoire de conf sur le PVC (identité ADI *et* libs) —
+            # pas seulement lib/ : c'est adi.pb qu'il faut persister.
             - name: anisette-state
-              mountPath: /home/Alcoholic/.config/anisette-v3/lib/
+              mountPath: /home/Alcoholic/.config/anisette-v3
           resources:
             {{- toYaml .Values.anisette.resources | nindent 12 }}
       volumes:
         {{- if .Values.anisette.identitySecret }}
-        - name: anisette-config
-          emptyDir: {}
         - name: identity-seed
           secret:
             secretName: {{ .Values.anisette.identitySecret }}

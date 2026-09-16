@@ -15,9 +15,19 @@ anisetteUrl: "http://anisette:6969/"
 
 anisette:
   enabled: true
-  # Nom d'un Secret (adi.pb + device.json) réinjecté au démarrage pour garder
-  # l'identité "machine de confiance" (zéro re-2FA). Vide = pas de seed.
+  # Nom d'un Secret (adi.pb + device.json) servant de SEMENCE DE SECOURS : posé
+  # sur le PVC uniquement s'il n'y a pas déjà d'identité. Vide = pas de seed.
+  # ⚠ Ce n'est PAS une sauvegarde vivante : l'identité de référence est celle du
+  # PVC, que le serveur re-provisionne. Re-sceller le Secret après un bootstrap.
   identitySecret: ""
+  # true = ÉCRASE l'identité du PVC par celle du Secret au prochain démarrage.
+  # À réserver à une restauration volontaire : laisser true regèle l'identité à
+  # chaque start → péremption ADI → 503 chez Apple (cf. templates/anisette.yaml).
+  forceReseed: false
+  # true = SUPPRIME l'identité au démarrage → le serveur en provisionne une neuve.
+  # Coûte une 2FA SMS pour re-truster la machine. Repasser à false aussitôt après,
+  # sinon chaque démarrage repart de zéro (2FA à chaque fois). Cf. README.
+  reprovision: false
   image:
     repository: dadoum/anisette-v3-server
     tag: latest
