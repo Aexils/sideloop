@@ -202,6 +202,16 @@ def reachable_udids(targets: set[str]) -> set[str]:
         print(f"    {len(have)}/{len(targets)} device(s) joignables — on les sert "
               "(pas de redémarrage tunneld : il casserait les tunnels actifs)")
         return have
+    # Rien ne répond. Un restart ne sert QUE si la redécouverte mDNS peut changer
+    # quelque chose — c'est-à-dire si un appareil manquant n'a pas d'entrée vivante.
+    # Un appareil ANNONCÉ et qui répond au ping est simplement en veille : le
+    # redémarrage ne le réveillera pas, il coûtera 3 min et cassera les tunnels des
+    # autres. Dans ce cas on ne touche à rien et on repasse dans 30 min.
+    asleep = [u for u in targets if "verrouillé ou en veille" in absence_reason(u)]
+    if len(asleep) == len(targets):
+        print(f"    {len(targets)} device(s) présents mais en veille — pas de "
+              "reconstruction tunneld (elle ne les réveillerait pas)")
+        return set()
     print("    aucun tunnel ne répond → reconstruction tunneld (mDNS)")
     restart_tunneld()
     return _wait_for_tunnels(targets)

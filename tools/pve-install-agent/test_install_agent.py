@@ -33,6 +33,8 @@ def setup(listed, responding, *, back_after_sec=None, back=None):
     ag._tunneld_up = lambda timeout=60: True
     return st
 
+ag.absence_reason = lambda u: "pas annoncé par tunneld (appareil hors du Wi-Fi maison ?)"
+
 def run(label, expect, st):
     got = ag.reachable_udids(set(TARGETS))
     print(f"{'PASS' if got == expect else 'FAIL'}  {label}")
@@ -47,6 +49,13 @@ print("\n=== 2. LE BUG DU 2026-09-17 : un absent, deux vivants ===")
 st = setup({A,B,C}, {A,B})            # C parti de la maison, entrée tunneld périmée
 run("sert les 2 présents", {A,B}, st)
 assert st["restarts"] == 0, "AVANT : restart → les 3 devenaient muets, run perdu"
+
+print("\n=== 2b. plus rien ne répond, mais tous PRÉSENTS et en veille ===")
+st = setup({A,B,C}, set())
+ag.absence_reason = lambda u: "présent sur le réseau (192.168.2.x) mais lockdown ne répond pas — appareil verrouillé ou en veille"
+run("pas de restart : un reboot de tunneld ne réveille personne", set(), st)
+assert st["restarts"] == 0, "restart inutile de 3 min, et casse les tunnels des autres"
+ag.absence_reason = lambda u: "pas annoncé par tunneld (appareil hors du Wi-Fi maison ?)"
 
 print("\n=== 3. plus rien → restart, tunnels lents (78 s, comme mesuré) ===")
 st = setup({A,B,C}, set(), back_after_sec=78, back={A,B,C})
