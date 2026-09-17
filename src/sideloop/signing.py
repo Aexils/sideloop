@@ -22,7 +22,6 @@ import hmac
 import plistlib
 import subprocess
 import tempfile
-import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,38 +94,48 @@ def _loads_plist(data: bytes) -> dict:
         return plistlib.loads(_PLIST_HEADER + data)
 
 
-# Message posé quand la provision ADI est morte — repris tel quel par le
-# dashboard, donc il doit dire QUOI faire, pas juste "2FA ?".
-ANISETTE_STALE_MSG = (
-    "anisette : OTP ADI FIGÉ (X-Apple-I-MD identique sur {n} appels) — la "
-    "provision est périmée, Apple répond 503. Re-provisionner le serveur "
-    "(= une 2FA SMS à refaire), cf. tools/apple_auth."
-)
+# ⚠ Depuis début septembre 2026, l'edge d'Apple REFUSE — 503, avant même de
+# regarder les identifiants — toute requête vers gsa.apple.com dont le
+# X-MMe-Client-Info nomme `com.apple.dt.Xcode`. Mesuré le 2026-09-17 : requête
+# identique, Xcode → 503 HTML, akd → 200 / ec=0. Le serveur anisette sert encore
+# la chaîne Xcode, on l'écrase donc ici. Même correctif en amont : AltServer
+# 1.7.6, SideStore, AltStore #1790, FindMy.py #271, anisette-v3-server #59.
+AKD_CLIENT_INFO = "<iMac11,3> <Mac OS X;10.15.6;19G2021> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 
 
-def probe_anisette(anisette_url: str, attempts: int = 3, delay: float = 1.0) -> str:
-    """Diagnostic de l'anisette AVANT de parler à Apple. "" = saine.
+class AkdAnisette(Anisette):
+    """Anisette qui s'annonce comme `akd` et non comme Xcode (cf. AKD_CLIENT_INFO).
 
-    `X-Apple-I-MD` est un mot de passe à usage unique : il DOIT changer à chaque
-    appel. Figé = la session ADI est morte (provision périmée / identité gelée),
-    et gsa.apple.com répondra 503 à toute requête signée avec. Le serveur, lui,
-    continue de répondre 200 : aucune sonde k8s ne peut voir ça.
+    `client` est lu par grandslam pour l'en-tête X-MMe-Client-Info de TOUTES les
+    requêtes GrandSlam, et par generate_headers(client_info=True) pour celles du
+    portail développeur : surcharger cette seule propriété couvre les deux.
     """
-    seen: set[str] = set()
-    for i in range(attempts):
-        if i:
-            time.sleep(delay)
-        try:
-            r = requests.get(anisette_url, timeout=10)
-            r.raise_for_status()
-            seen.add(r.json().get("X-Apple-I-MD", ""))
-        except Exception as e:  # noqa: BLE001
-            return f"anisette injoignable ({anisette_url}) : {type(e).__name__}: {e}"
-    if seen == {""}:
-        return (f"anisette ({anisette_url}) ne renvoie pas de X-Apple-I-MD : "
+
+    @property
+    def client(self) -> str:
+        return AKD_CLIENT_INFO
+
+
+def probe_anisette(anisette_url: str) -> str:
+    """Diagnostic de l'anisette AVANT de parler à Apple. "" = elle répond bien.
+
+    Se limite à ce qui est VÉRIFIABLE localement : joignable, et sert les en-têtes
+    attendus. ⚠ Ne pas y remettre de test « l'OTP X-Apple-I-MD doit changer entre
+    deux appels » : il est fenêtré dans le temps, deux appels rapprochés renvoient
+    légitimement la même valeur (constaté le 2026-09-17, y compris sur une identité
+    fraîchement provisionnée). Cette inférence avait fait accuser l'anisette à tort.
+    """
+    try:
+        r = requests.get(anisette_url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        return f"anisette injoignable ({anisette_url}) : {type(e).__name__}: {e}"
+    missing = [k for k in ("X-Apple-I-MD", "X-Apple-I-MD-M", "X-Apple-I-MD-RINFO")
+               if not data.get(k)]
+    if missing:
+        return (f"anisette ({anisette_url}) ne sert pas {', '.join(missing)} : "
                 "réponse inattendue, serveur incompatible ?")
-    if attempts > 1 and len(seen) == 1:
-        return ANISETTE_STALE_MSG.format(n=attempts)
     return ""
 
 
@@ -136,17 +145,19 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
     Le 2FA n'est PAS géré ici : l'anisette doit être une machine DÉJÀ trustée
     (2FA fait une fois hors-ligne). Un login sur machine non-trustée lèvera.
     """
-    anisette = Anisette(anisette_url)
+    anisette = AkdAnisette(anisette_url)
     try:
         spd = authenticate(apple_id, password, anisette)
     except plistlib.InvalidFileException as e:
         # gsa.apple.com a renvoyé du HTML (typiquement 503) ; grandslam essaie de
-        # le parser en plist et lâche un "Invalid file" illisible. On remonte la
-        # VRAIE cause : 9 fois sur 10 l'anisette, pas le compte.
+        # le parser en plist et lâche un "Invalid file" illisible. Ce refus tombe
+        # AVANT toute vérification d'identifiants : ce n'est ni le compte, ni la
+        # 2FA, ni l'anisette — c'est un filtrage sur le client qu'on annonce.
         raise RuntimeError(
-            "gsa.apple.com n'a pas renvoyé un plist (requête refusée, typiquement "
-            "503). " + (probe_anisette(anisette_url)
-                        or "anisette saine — vérifier le compte / mot de passe.")
+            "gsa.apple.com a refusé la requête au niveau de son edge (réponse HTML, "
+            f"typiquement 503), avant tout examen des identifiants. On s'annonce en "
+            f"« {AKD_CLIENT_INFO} » ; si Apple a élargi son filtrage, c'est cette "
+            "chaîne qu'il faut revoir. " + (probe_anisette(anisette_url) or "anisette OK.")
         ) from e
     if not isinstance(spd, dict) or "adsid" not in spd:
         raise RuntimeError(
