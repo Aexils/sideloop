@@ -152,6 +152,39 @@ def _wait_for_tunnels(targets: set[str]) -> set[str]:
     return have
 
 
+def absence_reason(udid: str) -> str:
+    """Pourquoi ce device n'est pas joignable — distingue deux cas très différents.
+
+    Un iPhone VERROUILLÉ reste sur le Wi-Fi et répond au ping, tunneld lui crée
+    même un tunnel, mais il ne sert pas lockdown. Dire « hors Wi-Fi » dans ce cas
+    envoie sur une fausse piste (vécu le 2026-09-17) : on va donc voir si son IP
+    répond avant de conclure quoi que ce soit."""
+    try:
+        with urllib.request.urlopen(TUNNELD_URL, timeout=5) as r:
+            entries = json.load(r).get(udid) or []
+    except Exception:  # noqa: BLE001
+        entries = []
+    ip = next((e.get("interface") for e in entries if e.get("interface")), "")
+    if not ip:
+        return "pas annoncé par tunneld (appareil hors du Wi-Fi maison ?)"
+    # ⚠ Ce ping dit « éveillé à l'instant », PAS « présent ». Un appareil iOS en
+    # veille profonde cesse complètement de répondre pendant des dizaines de
+    # secondes, puis répond à 7 ms (observé sur le même iPad à 3 min d'écart,
+    # 2026-09-17) — d'où la formulation prudente des messages ci-dessous, qui
+    # n'affirment jamais que l'appareil est parti. Deux paquets seulement pour
+    # amortir le bruit d'un paquet isolé. ping6 gère le scope %wlp4s0, vérifié.
+    cmd = "ping6" if ":" in ip else "ping"
+    try:
+        alive = subprocess.run([cmd, "-c", "2", "-W", "2", ip],
+                               capture_output=True, timeout=10).returncode == 0
+    except Exception:  # noqa: BLE001
+        alive = False
+    if alive:
+        return (f"présent sur le réseau ({ip}) mais lockdown ne répond pas "
+                "— appareil verrouillé ou en veille")
+    return f"vu sur {ip} mais ne répond plus au ping (veille profonde, ou parti)"
+
+
 def reachable_udids(targets: set[str]) -> set[str]:
     """Sous-ensemble des UDID cibles RÉELLEMENT joignables (tunnel qui répond).
 
@@ -330,9 +363,11 @@ def main() -> int:
                if not freshly_installed(state, e["bundle_id"], u, sig)}
     reach = reachable_udids(targets) if targets else set()
     absent = targets - reach
+    absent_why = {u: absence_reason(u) for u in absent}
+    for udid, why in absent_why.items():
+        print(f"    {udid[:8]}… non tenté : {why}")
     if absent:
-        print(f"    {len(absent)} device(s) sans tunnel ce run — non tentés, "
-              f"retry au prochain passage")
+        print(f"    {len(absent)} device(s) non tentés — retry au prochain passage")
 
     for e in data.get("entries", []):
         ipa = SIGNED_DIR / e["signed_ipa"]
@@ -365,8 +400,7 @@ def main() -> int:
                     "at": datetime.now(timezone.utc).isoformat(),
                     "device_name": prev.get("device_name", ""),
                     "product_type": prev.get("product_type", ""),
-                    "error": "pas de tunnel ce run (appareil absent/endormi, "
-                             "ou tunnel pas encore rétabli)"}
+                    "error": absent_why.get(udid, "pas de tunnel ce run")}
                 all_ok = False
                 continue
             attempted += 1
