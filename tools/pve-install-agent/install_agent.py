@@ -37,6 +37,16 @@ HEARTBEAT = SIGNED_DIR / "agent-heartbeat.json"
 INSTALLED_STATE = SIGNED_DIR / "installed-state.json"
 FRESH_HOURS = 48
 
+# Après un `systemctl restart tunneld`, les tunnels RemotePairing doivent être
+# redécouverts en mDNS PUIS rétablis. Mesuré le 2026-09-17 : 78 s après le restart,
+# aucun des 3 appareils ne répondait encore — alors que tous étaient présents
+# (l'iPad jouait une vidéo). L'ancien plafond de 45 s les déclarait donc « hors
+# Wi-Fi » et sautait leur installation. On attend bien plus longtemps, mais on
+# sort dès que tout est là, ou dès que l'ensemble joignable cesse de grandir.
+TUNNEL_SETTLE_SEC = 180
+TUNNEL_PROBE_EVERY = 8
+TUNNEL_STABLE_PROBES = 3      # ~24 s sans progrès = les manquants ne viendront pas
+
 # Robustesse : le tunnel RemoteXPC (iOS 26/27, Wi-Fi) décroche parfois pendant
 # les gros transferts (~200 Mo) → on retente avec reconstruction du tunnel.
 MAX_ATTEMPTS = 3
@@ -95,32 +105,73 @@ def tunnel_ready(udid: str, timeout: int = 12) -> bool:
         return False
 
 
+def _probe(cands: set[str]) -> set[str]:
+    """UDID dont le tunnel répond VRAIMENT (lockdown), pas juste annoncés.
+
+    ⚠ tunneld garde des entrées PÉRIMÉES : un device endormi/hors Wi-Fi reste dans
+    sa liste de clés alors que son tunnel ne répond plus (lockdown timeout). Sans
+    cette sonde on croit un device joignable, l'install hangue jusqu'au timeout,
+    et le heartbeat ment à Nexus."""
+    return {u for u in cands if tunnel_ready(u)}
+
+
+def _tunneld_up(timeout: int = 60) -> bool:
+    """Attend que l'API tunneld réponde de nouveau après un redémarrage."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(TUNNELD_URL, timeout=3):
+                return True
+        except Exception:  # noqa: BLE001
+            time.sleep(2)
+    return False
+
+
+def _wait_for_tunnels(targets: set[str]) -> set[str]:
+    """Sonde en boucle après une reconstruction, jusqu'à TUNNEL_SETTLE_SEC.
+
+    Sort dès que toutes les cibles répondent, ou dès que l'ensemble joignable
+    n'a pas bougé sur TUNNEL_STABLE_PROBES sondes — inutile d'attendre 3 minutes
+    pour un appareil qui n'est simplement pas à la maison."""
+    if not _tunneld_up():
+        print("    tunneld ne répond pas après redémarrage — on abandonne ce run")
+        return set()
+    have: set[str] = set()
+    stable = 0
+    deadline = time.time() + TUNNEL_SETTLE_SEC
+    while time.time() < deadline:
+        time.sleep(TUNNEL_PROBE_EVERY)
+        prev, have = have, _probe(targets & set(_tunneld_udids()))
+        if targets <= have:
+            break
+        stable = stable + 1 if have and have == prev else 0
+        if stable >= TUNNEL_STABLE_PROBES:
+            print(f"    {len(have)}/{len(targets)} tunnel(s) rétablis et stables "
+                  "— on n'attend pas les absents")
+            break
+    return have
+
+
 def reachable_udids(targets: set[str]) -> set[str]:
     """Sous-ensemble des UDID cibles RÉELLEMENT joignables (tunnel qui répond).
 
-    ⚠ tunneld garde des entrées PÉRIMÉES : un device endormi/hors Wi-Fi reste dans
-    sa liste de clés alors que son tunnel ne répond plus (lockdown timeout). On ne
-    peut donc PAS se fier à _tunneld_udids() seul → on SONDE lockdown pour de vrai
-    (tunnel_ready) sur chaque candidat. Sinon on croit un device joignable, on tente
-    l'install, elle hangue jusqu'au timeout, et le heartbeat ment à Nexus.
-
-    Fait AU PLUS un restart de tunneld par run (si des cibles manquent) pour laisser
-    le mDNS redécouvrir les appareils réveillés, puis re-sonde."""
-    def probe(cands: set[str]) -> set[str]:
-        return {u for u in cands if tunnel_ready(u)}
-
-    have = probe(targets & set(_tunneld_udids()))
+    ⚠ Un `restart tunneld` DÉTRUIT les tunnels qui marchent pour espérer en
+    redécouvrir un absent. Le 2026-09-17, un seul appareil manquait (parti de la
+    maison) : le restart a rendu les trois muets, et la sonde 78 s plus tard a
+    déclaré « 3 device(s) injoignable(s) » — run entier perdu, message accusant
+    l'utilisateur alors que l'agent s'était saboté lui-même.
+    On ne reconstruit donc QUE si PLUS RIEN ne répond ; sinon on sert les présents
+    et les manquants sont retentés au prochain passage (toutes les 30 min)."""
+    have = _probe(targets & set(_tunneld_udids()))
     if targets <= have:
         return have
-    print("    tunnels incomplets/périmés → une reconstruction tunneld (mDNS)")
+    if have:
+        print(f"    {len(have)}/{len(targets)} device(s) joignables — on les sert "
+              "(pas de redémarrage tunneld : il casserait les tunnels actifs)")
+        return have
+    print("    aucun tunnel ne répond → reconstruction tunneld (mDNS)")
     restart_tunneld()
-    deadline = time.time() + 45
-    while time.time() < deadline:
-        time.sleep(8)
-        have = probe(targets & set(_tunneld_udids()))
-        if targets <= have:
-            break
-    return have
+    return _wait_for_tunnels(targets)
 
 
 def device_info(udid: str) -> tuple[str, str]:
@@ -280,8 +331,8 @@ def main() -> int:
     reach = reachable_udids(targets) if targets else set()
     absent = targets - reach
     if absent:
-        print(f"    {len(absent)} device(s) injoignable(s) (hors Wi-Fi/verrouillé) "
-              f"— skip rapide, retry au prochain run")
+        print(f"    {len(absent)} device(s) sans tunnel ce run — non tentés, "
+              f"retry au prochain passage")
 
     for e in data.get("entries", []):
         ipa = SIGNED_DIR / e["signed_ipa"]
@@ -314,7 +365,8 @@ def main() -> int:
                     "at": datetime.now(timezone.utc).isoformat(),
                     "device_name": prev.get("device_name", ""),
                     "product_type": prev.get("product_type", ""),
-                    "error": "injoignable (hors Wi-Fi / verrouillé)"}
+                    "error": "pas de tunnel ce run (appareil absent/endormi, "
+                             "ou tunnel pas encore rétabli)"}
                 all_ok = False
                 continue
             attempted += 1
