@@ -102,18 +102,71 @@ def _loads_plist(data: bytes) -> dict:
 # 1.7.6, SideStore, AltStore #1790, FindMy.py #271, anisette-v3-server #59.
 AKD_CLIENT_INFO = "<iMac11,3> <Mac OS X;10.15.6;19G2021> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
 
+# ⚠ Depuis le 12-13 octobre 2026, GrandSlam REFUSE en plus tout client-info qui
+# s'annonce macOS : `ec=-80045` / `hsc=500` / « This action cannot be completed at
+# this time. », dès la requête `o=init`, AVANT que le mot de passe ne serve. Apple
+# a déployé une détection anti-fraude sur les empreintes ADI fabriquées par
+# anisette-v3-server (CoreADI Android dans un macOS 13.1 virtualisé) : prétendre
+# être un Mac ne passe plus. S'annoncer Windows sur GsService2 suffit — mesuré le
+# 2026-10-16 depuis le pod, même identité anisette, même compte :
+#
+#   | X-MMe-Client-Info                   | o=init              | o=complete     |
+#   |-------------------------------------|---------------------|----------------|
+#   | …(com.apple.akd/1.0)   [macOS]      | ec=-80045, hsc=500  | jamais atteint |
+#   | <PC> <Windows;6.2(0,0);9200>        | ec=0, sp=s2k        | ec=0, au=None  |
+#
+# `au=None` : l'identité anisette reste TRUSTÉE, aucune 2FA à refaire. Panne
+# communautaire (SideStore, AltStore, iLoader, Sideloadly) — cf. upstream
+# anisette-v3-server#61, qui documente ce même contournement par en-tête.
+#
+# ⚠ Windows UNIQUEMENT pour gsa.apple.com/GsService2. developerservices2 (le
+# portail dev) continue d'attendre l'en-tête macOS/akd : d'où les deux classes.
+GSA_CLIENT_INFO = "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1>"
+
 
 class AkdAnisette(Anisette):
-    """Anisette qui s'annonce comme `akd` et non comme Xcode (cf. AKD_CLIENT_INFO).
+    """Anisette du PORTAIL DEV : s'annonce `akd` et non Xcode (cf. AKD_CLIENT_INFO).
 
-    `client` est lu par grandslam pour l'en-tête X-MMe-Client-Info de TOUTES les
-    requêtes GrandSlam, et par generate_headers(client_info=True) pour celles du
-    portail développeur : surcharger cette seule propriété couvre les deux.
+    `client` est lu par generate_headers(client_info=True) pour les requêtes vers
+    developerservices2.
     """
 
     @property
     def client(self) -> str:
         return AKD_CLIENT_INFO
+
+
+class GsaAnisette(AkdAnisette):
+    """Anisette de GRANDSLAM : s'annonce Windows (cf. GSA_CLIENT_INFO).
+
+    `client` est lu par grandslam pour l'en-tête X-MMe-Client-Info de toutes les
+    requêtes gsa.apple.com/GsService2 — login SRP *et* apptokens.
+    """
+
+    @property
+    def client(self) -> str:
+        return GSA_CLIENT_INFO
+
+
+def _gsa_init_status(anisette: Anisette, apple_id: str) -> dict:
+    """Rejoue la SEULE requête `o=init` pour LIRE le Status renvoyé par Apple.
+
+    grandslam imprime « Error {ec}: {em} » puis retourne None : le Status est
+    perdu, et l'appelant ne peut plus que deviner. On le rejoue ici — uniquement
+    sur le chemin d'erreur — pour pouvoir NOMMER le refus. Un `-80045` n'est pas
+    une 2FA manquante, et c'est la confusion qui a coûté deux diagnostics (le
+    2026-09-10 puis le 2026-10-13).
+    """
+    import srp._pysrp as srp
+    from grandslam.gsa import authenticated_request
+
+    usr = srp.User(apple_id, bytes(), hash_alg=srp.SHA256, ng_type=srp.NG_2048)
+    _, a2k = usr.start_authentication()
+    r = authenticated_request(
+        {"A2k": a2k, "ps": ["s2k", "s2k_fo"], "u": apple_id, "o": "init"}, anisette
+    )
+    st = r.get("Status", r)
+    return st if isinstance(st, dict) else {}
 
 
 def probe_anisette(anisette_url: str) -> str:
@@ -145,9 +198,12 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
     Le 2FA n'est PAS géré ici : l'anisette doit être une machine DÉJÀ trustée
     (2FA fait une fois hors-ligne). Un login sur machine non-trustée lèvera.
     """
-    anisette = AkdAnisette(anisette_url)
+    # Deux anisettes, deux en-têtes : Windows pour GrandSlam, akd/macOS pour le
+    # portail dev (cf. GSA_CLIENT_INFO). Même identité ADI derrière, même URL.
+    gsa = GsaAnisette(anisette_url)
+    portal = AkdAnisette(anisette_url)
     try:
-        spd = authenticate(apple_id, password, anisette)
+        spd = authenticate(apple_id, password, gsa)
     except plistlib.InvalidFileException as e:
         # gsa.apple.com a renvoyé du HTML (typiquement 503) ; grandslam essaie de
         # le parser en plist et lâche un "Invalid file" illisible. Ce refus tombe
@@ -156,17 +212,33 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
         raise RuntimeError(
             "gsa.apple.com a refusé la requête au niveau de son edge (réponse HTML, "
             f"typiquement 503), avant tout examen des identifiants. On s'annonce en "
-            f"« {AKD_CLIENT_INFO} » ; si Apple a élargi son filtrage, c'est cette "
+            f"« {GSA_CLIENT_INFO} » ; si Apple a élargi son filtrage, c'est cette "
             "chaîne qu'il faut revoir. " + (probe_anisette(anisette_url) or "anisette OK.")
         ) from e
     if not isinstance(spd, dict) or "adsid" not in spd:
+        # NE PAS accuser la 2FA à l'aveugle : relire ce qu'Apple a réellement dit.
+        # Un refus à l'init est un refus du CLIENT (en-tête, empreinte ADI) ; un
+        # échec après un init accepté est un refus des IDENTIFIANTS.
+        try:
+            st = _gsa_init_status(gsa, apple_id)
+        except Exception:  # noqa: BLE001
+            st = {}
+        ec = st.get("ec")
+        if ec not in (None, 0, "0"):
+            raise RuntimeError(
+                f"GrandSlam a refusé l'init : ec={ec} « {st.get('em')} » "
+                f"(hsc={st.get('hsc')}). Ce refus tombe AVANT l'examen du mot de "
+                "passe : ce n'est ni le compte, ni la 2FA, ni l'identité anisette, "
+                f"mais le client qu'on annonce — « {GSA_CLIENT_INFO} ». "
+                + (probe_anisette(anisette_url) or "anisette OK.")
+            )
         raise RuntimeError(
-            "Login GrandSlam échoué (2FA requis ? anisette non trustée ?). "
-            "L'anisette doit être la machine trustée une fois par SMS. "
-            + (probe_anisette(anisette_url) or "")
+            "Login GrandSlam échoué APRÈS un init accepté (2FA requise ? mot de passe "
+            "changé ?). L'anisette doit être la machine trustée une fois par SMS. "
+            + (probe_anisette(anisette_url) or "anisette OK.")
         )
-    gs_token = _fetch_app_token(anisette, spd, XCODE_APP)
-    return Session(anisette=anisette, adsid=spd["adsid"], gs_token=gs_token, team_id=team_id)
+    gs_token = _fetch_app_token(gsa, spd, XCODE_APP)
+    return Session(anisette=portal, adsid=spd["adsid"], gs_token=gs_token, team_id=team_id)
 
 
 def dev_request(session: Session, action: str, extra: dict | None = None) -> dict:

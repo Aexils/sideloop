@@ -107,6 +107,35 @@ SideStore, FindMy.py #271, anisette-v3-server #59.
 expirées à J+7). Le dashboard accusait la 2FA, et l'identité anisette a été suspectée à
 tort — elle était intacte.
 
+## Apple refuse les empreintes « macOS » (depuis le 12-13 octobre 2026)
+
+GrandSlam répond `ec=-80045` / `hsc=500` / « This action cannot be completed at this
+time. » dès la requête `o=init`, **avant que le mot de passe ne serve**, à toute requête
+dont le `X-MMe-Client-Info` s'annonce macOS. Apple a déployé une détection anti-fraude
+sur les empreintes ADI fabriquées par anisette-v3-server (CoreADI **Android** tournant
+dans un macOS 13.1 virtualisé) : prétendre être un Mac ne passe plus.
+
+Mesuré le 2026-10-16 depuis le pod, **même identité anisette, même compte** :
+
+| `X-MMe-Client-Info` | `o=init` | `o=complete` |
+|---|---|---|
+| `…(com.apple.akd/1.0)` — macOS | **ec=-80045**, hsc=500 | jamais atteint |
+| `<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1>` | **ec=0**, sp=s2k | **ec=0**, au=None |
+
+`au=None` : l'identité anisette reste **trustée**, aucune 2FA à refaire. `signing.py`
+expose donc **deux** anisettes — `GsaAnisette` (Windows) pour gsa.apple.com/GsService2,
+login SRP *et* apptokens, et `AkdAnisette` (akd/macOS) pour developerservices2, qui
+attend toujours l'en-tête macOS. Panne communautaire (SideStore, AltStore, iLoader,
+Sideloadly) ; même contournement en amont : anisette-v3-server#61.
+
+⚠ C'est la cause de la panne du 2026-10-13 (dernière signature réussie le 12 à 18:00).
+Le dashboard a **encore** accusé la 2FA : le message d'erreur avalait le `Status`
+d'Apple. `login()` relit désormais ce `Status` (`_gsa_init_status`) et distingue un refus
+à l'init (le client qu'on annonce) d'un échec après init (les identifiants).
+
+⚠ En sondant GSA en rafale on se fait **limiter en débit** : les réponses deviennent du
+HTML et `apptokens` lâche un `InvalidFileException` trompeur. Espacer les essais.
+
 ## Limites du compte Apple gratuit
 
 3 apps actives · 10 App IDs/semaine · cert 7 jours (d'où le CronJob à ~5 j).
