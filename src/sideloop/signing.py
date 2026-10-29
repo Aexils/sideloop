@@ -55,15 +55,15 @@ def _decrypt_gcm(key: bytes, data: bytes) -> bytes:
     return AESGCM(key).decrypt(iv, ct, version)
 
 
-def _fetch_app_token(anisette: Anisette, spd: dict, app: str) -> str:
-    """Flux GrandSlam `apptokens` → token app-specific (déchiffré)."""
+def _request_app_token(anisette: Anisette, spd: dict, app: str) -> dict:
+    """UNE requête GrandSlam `apptokens`, réponse brute (`et` absent = refus)."""
     from grandslam.gsa import authenticated_request
 
     checksum = hmac.new(spd["sk"], digestmod=hashlib.sha256)
     checksum.update(b"apptokens")
     checksum.update(spd["adsid"].encode())
     checksum.update(app.encode())
-    r = authenticated_request(
+    return authenticated_request(
         {
             "u": spd["adsid"],
             "app": [app],
@@ -74,9 +74,34 @@ def _fetch_app_token(anisette: Anisette, spd: dict, app: str) -> str:
         },
         anisette,
     )
-    decrypted = _decrypt_gcm(spd["sk"], r["et"])
-    tokens = _loads_plist(decrypted)
-    return tokens["t"][app]["token"]
+
+
+def _status_str(r: dict) -> str:
+    st = r.get("Status", {}) if isinstance(r, dict) else {}
+    return f"ec={st.get('ec')} « {st.get('em')} » (hsc={st.get('hsc')})"
+
+
+def _fetch_app_token(anisettes: list[Anisette], spd: dict, app: str) -> str:
+    """Flux GrandSlam `apptokens` → token app-specific (déchiffré).
+
+    ⚠ Depuis le 2026-10-22, `apptokens` répond SANS `et` alors que le login SRP
+    passe — le run plantait sur un `KeyError: 'et'` muet pendant une semaine.
+    Panne communautaire : `ec=-80046` « This action cannot be completed at this
+    time. » à cette étape précise (iPASide #9), contournée en annonçant un Mac.
+    On essaie donc chaque client-info dans l'ordre, et si tous échouent on NOMME
+    ce qu'Apple a répondu à chacun au lieu de lever un KeyError.
+    """
+    refus = []
+    for anisette in anisettes:
+        r = _request_app_token(anisette, spd, app)
+        if isinstance(r, dict) and "et" in r:
+            tokens = _loads_plist(_decrypt_gcm(spd["sk"], r["et"]))
+            return tokens["t"][app]["token"]
+        refus.append(f"« {anisette.client} » → {_status_str(r)}")
+    raise RuntimeError(
+        "Login SRP accepté, mais GrandSlam refuse le token app (`apptokens` sans "
+        "`et`) : " + " ; ".join(refus)
+    )
 
 
 # Les plists Apple renvoyés chiffrés arrivent SANS en-tête XML — le préfixer.
@@ -237,7 +262,8 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
             "changé ?). L'anisette doit être la machine trustée une fois par SMS. "
             + (probe_anisette(anisette_url) or "anisette OK.")
         )
-    gs_token = _fetch_app_token(gsa, spd, XCODE_APP)
+    # Windows d'abord (ce qui marchait jusqu'au 21 oct.), puis akd/macOS.
+    gs_token = _fetch_app_token([gsa, portal], spd, XCODE_APP)
     return Session(anisette=portal, adsid=spd["adsid"], gs_token=gs_token, team_id=team_id)
 
 
