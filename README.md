@@ -136,6 +136,16 @@ d'Apple. `login()` relit désormais ce `Status` (`_gsa_init_status`) et distingu
 ⚠ En sondant GSA en rafale on se fait **limiter en débit** : les réponses deviennent du
 HTML et `apptokens` lâche un `InvalidFileException` trompeur. Espacer les essais.
 
+## Apple refuse l'anisette-v3 elle-même (depuis le 30 octobre 2026)
+
+`ec=-80045` dès `o=init`, cette fois avec **tous** les client-info — Windows compris —,
+avec un compte fictif et avec une anisette publique : c'est l'empreinte CoreADI Android
+d'anisette-v3-server qui est filtrée. L'anisette d'un **vrai Mac** passe (`ec=-20970`,
+compte inconnu, sur la même requête). Le CronJob la demande au Mac d'Alexis par
+Tailscale, et tourne toutes les heures pour attraper le Mac allumé :
+voir [`tools/mac-anisette/`](tools/mac-anisette/README.md). Le pod `anisette` reste
+déployé, inutilisé, au cas où Apple reviendrait en arrière.
+
 ## Limites du compte Apple gratuit
 
 3 apps actives · 10 App IDs/semaine · cert 7 jours (d'où le CronJob à ~5 j).

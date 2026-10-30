@@ -15,6 +15,17 @@ class Settings(BaseSettings):
 
     # Serveur anisette v3 STABLE (machine trustée = 0 re-2FA). Service du namespace.
     anisette_url: str = "http://anisette:6969/"
+    # true = l'anisette vient d'un VRAI Mac (tools/mac-anisette, joint par
+    # Tailscale) : on s'annonce avec son identité, et le Mac éteint ou en veille
+    # n'est pas une panne — le refresh passe son tour.
+    anisette_native: bool = False
+
+    # Refresh horaire, Apple sollicité au plus une fois par jour : on ne re-signe
+    # que si une app a été signée il y a plus de N heures (0 = à chaque run). Et
+    # après un login refusé, on attend N heures avant de retenter (0 = aussitôt) :
+    # marteler GrandSlam fait verrouiller les comptes (`-20209`).
+    resign_after_hours: int = 0
+    login_retry_hours: int = 0
 
     # ── Stockage ──────────────────────────────────────────────────────────
     # PVC : IPAs sources + state.json (apps gérées).

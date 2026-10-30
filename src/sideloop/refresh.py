@@ -5,12 +5,17 @@ pve qui lit `signed/manifest.json` et pousse les IPA par le tunnel Wi-Fi.
 """
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import signing, storage
 from .config import settings
 from .models import Manifest, RunAppResult, RunRecord, SignedEntry
+
+
+def _aware(dt: datetime) -> datetime:
+    """Les dates de state.json/runs.json peuvent être naïves : ce sont des UTC."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def run() -> int:
@@ -25,6 +30,28 @@ def run() -> int:
 
     now = datetime.now(timezone.utc)
 
+    # Les runs « rien à faire » ne s'historisent PAS : runs.json ne garde que
+    # ce qu'Apple a répondu, et le compte à rebours d'expiration alerte tout seul
+    # si le Mac reste injoignable trop longtemps.
+    if settings.resign_after_hours:
+        cutoff = now - timedelta(hours=settings.resign_after_hours)
+        if all(a.last_signed and _aware(a.last_signed) > cutoff for a in apps):
+            print(f"[refresh] signatures de moins de {settings.resign_after_hours} h "
+                  "— rien à faire.")
+            return 0
+    if settings.login_retry_hours:
+        runs = storage.load_runs()
+        last = runs[-1] if runs else None
+        if (last is not None and not last.login_ok
+                and _aware(last.at) > now - timedelta(hours=settings.login_retry_hours)):
+            print(f"[refresh] login refusé à {last.at:%H:%M} UTC — prochain essai "
+                  f"{settings.login_retry_hours} h après, pas avant.")
+            return 0
+    if settings.anisette_native and not signing.anisette_reachable(settings.anisette_url):
+        print(f"[refresh] anisette du Mac injoignable ({settings.anisette_url}) — "
+              "Mac éteint ou en veille, on repassera.")
+        return 0
+
     # Sonde l'anisette AVANT de parler à Apple : une provision ADI périmée fait
     # répondre 503 à gsa.apple.com, ce qui ressort en "Invalid file" incompréhensible.
     # Mieux vaut nommer la panne que la déduire (cf. 2026-09-10).
@@ -37,7 +64,8 @@ def run() -> int:
     print(f"[refresh] login Apple (anisette {settings.anisette_url})…")
     try:
         session = signing.login(settings.apple_id, settings.apple_password,
-                                settings.anisette_url, settings.team_id)
+                                settings.anisette_url, settings.team_id,
+                                native=settings.anisette_native)
     except Exception as e:  # noqa: BLE001
         print(f"[refresh] ÉCHEC login: {e}", file=sys.stderr)
         # On historise l'échec AVEC sa cause (affichée telle quelle par Nexus).

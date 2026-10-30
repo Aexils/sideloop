@@ -39,6 +39,12 @@ spec:
                   value: /signed
                 - name: SIDELOOP_ANISETTE_URL
                   value: {{ .Values.anisetteUrl | quote }}
+                - name: SIDELOOP_ANISETTE_NATIVE
+                  value: {{ .Values.anisetteNative | quote }}
+                - name: SIDELOOP_RESIGN_AFTER_HOURS
+                  value: {{ .Values.refresh.resignAfterHours | quote }}
+                - name: SIDELOOP_LOGIN_RETRY_HOURS
+                  value: {{ .Values.refresh.loginRetryHours | quote }}
                 - name: SIDELOOP_APPLE_ID
                   value: {{ .Values.apple.appleId | quote }}
                 - name: SIDELOOP_TEAM_ID

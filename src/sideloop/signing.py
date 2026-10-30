@@ -173,6 +173,51 @@ class GsaAnisette(AkdAnisette):
         return GSA_CLIENT_INFO
 
 
+class NativeAnisette(Anisette):
+    """Anisette d'un VRAI Mac (tools/mac-anisette) : tout vient du serveur.
+
+    ⚠ Depuis le 2026-10-30, GrandSlam refuse toute anisette anisette-v3 (CoreADI
+    Android) — `ec=-80045` dès `o=init`, avec n'importe quel client-info, compte
+    fictif et anisette publique compris (mesuré par medic). Celle d'un vrai Mac
+    passe : `ec=-20970` (compte inconnu) sur la même requête, compte fictif.
+
+    grandslam invente l'identité de l'appareil à chaque instance (UUID aléatoire,
+    numéro de série « 0 ») et un client iMac de 2020 : face à une anisette réelle
+    ce serait un mensonge incohérent. On reprend donc TOUT ce que le Mac sert —
+    son UDID, son numéro de série, son client-info akd — pour GrandSlam comme
+    pour le portail dev.
+    """
+
+    @property
+    def client(self) -> str:
+        return self._anisette["X-MMe-Client-Info"]
+
+    @property
+    def device(self) -> str:
+        return self._anisette["X-Mme-Device-Id"]
+
+    @property
+    def serial(self) -> str:
+        return self._anisette["X-Apple-I-SRL-NO"]
+
+    @property
+    def local_user(self) -> str:
+        return self._anisette["X-Apple-I-MD-LU"]
+
+    @property
+    def router(self) -> str:
+        return self._anisette["X-Apple-I-MD-RINFO"]
+
+
+def anisette_reachable(anisette_url: str) -> bool:
+    """Le serveur anisette répond-il ? Celui du Mac dort la nuit et le week-end."""
+    try:
+        requests.get(anisette_url, timeout=5)
+    except (requests.ConnectionError, requests.Timeout):
+        return False
+    return True
+
+
 def _gsa_init_status(anisette: Anisette, apple_id: str) -> dict:
     """Rejoue la SEULE requête `o=init` pour LIRE le Status renvoyé par Apple.
 
@@ -217,16 +262,21 @@ def probe_anisette(anisette_url: str) -> str:
     return ""
 
 
-def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Session:
+def login(apple_id: str, password: str, anisette_url: str, team_id: str,
+          native: bool = False) -> Session:
     """Auth complète → Session utilisable pour le portail dev.
 
     Le 2FA n'est PAS géré ici : l'anisette doit être une machine DÉJÀ trustée
     (2FA fait une fois hors-ligne). Un login sur machine non-trustée lèvera.
     """
-    # Deux anisettes, deux en-têtes : Windows pour GrandSlam, akd/macOS pour le
-    # portail dev (cf. GSA_CLIENT_INFO). Même identité ADI derrière, même URL.
-    gsa = GsaAnisette(anisette_url)
-    portal = AkdAnisette(anisette_url)
+    if native:
+        # Un vrai Mac s'annonce tel qu'il est, partout (cf. NativeAnisette).
+        gsa = portal = NativeAnisette(anisette_url)
+    else:
+        # Deux anisettes, deux en-têtes : Windows pour GrandSlam, akd/macOS pour le
+        # portail dev (cf. GSA_CLIENT_INFO). Même identité ADI derrière, même URL.
+        gsa = GsaAnisette(anisette_url)
+        portal = AkdAnisette(anisette_url)
     try:
         spd = authenticate(apple_id, password, gsa)
     except plistlib.InvalidFileException as e:
@@ -237,7 +287,7 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
         raise RuntimeError(
             "gsa.apple.com a refusé la requête au niveau de son edge (réponse HTML, "
             f"typiquement 503), avant tout examen des identifiants. On s'annonce en "
-            f"« {GSA_CLIENT_INFO} » ; si Apple a élargi son filtrage, c'est cette "
+            f"« {gsa.client} » ; si Apple a élargi son filtrage, c'est cette "
             "chaîne qu'il faut revoir. " + (probe_anisette(anisette_url) or "anisette OK.")
         ) from e
     if not isinstance(spd, dict) or "adsid" not in spd:
@@ -259,7 +309,7 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
                 f"GrandSlam a refusé l'init : ec={ec} « {st.get('em')} » "
                 f"(hsc={st.get('hsc')}). Ce refus tombe AVANT l'examen du mot de "
                 "passe : ce n'est ni le mot de passe ni la 2FA. Reste l'en-tête "
-                f"client (« {GSA_CLIENT_INFO} ») ou l'empreinte anisette : à "
+                f"client (« {gsa.client} ») ou l'empreinte anisette : à "
                 "trancher en changeant UN seul des deux, compte fictif compris. "
                 + (probe_anisette(anisette_url) or "anisette OK.")
             )
@@ -269,7 +319,7 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
             + (probe_anisette(anisette_url) or "anisette OK.")
         )
     # Windows d'abord (ce qui marchait jusqu'au 21 oct.), puis akd/macOS.
-    gs_token = _fetch_app_token([gsa, portal], spd, XCODE_APP)
+    gs_token = _fetch_app_token([gsa] if gsa is portal else [gsa, portal], spd, XCODE_APP)
     return Session(anisette=portal, adsid=spd["adsid"], gs_token=gs_token, team_id=team_id)
 
 

@@ -12,6 +12,9 @@ image:
 # garde l'adi.pb TRUSTÉ (2FA fait UNE fois contre ce pod → 0 re-2FA ensuite).
 # Bootstrap : après 1er déploiement, faire le 2FA contre ce pod (cf. README).
 anisetteUrl: "http://anisette:6969/"
+# true = anisetteUrl pointe vers un VRAI Mac (tools/mac-anisette) : identité du
+# Mac annoncée telle quelle, et Mac injoignable = run sauté, pas une panne.
+anisetteNative: false
 
 anisette:
   enabled: true
@@ -47,6 +50,10 @@ apple:
 refresh:
   enabled: true
   schedule: "0 18 * * *"    # tous les jours à 18h (device à la maison le soir ; cert réutilisé)
+  # Pour un schedule horaire : ne re-signer que les signatures de plus de N h,
+  # et ne retenter un login refusé qu'après N h (0 = à chaque run).
+  resignAfterHours: 0
+  loginRetryHours: 0
   resources:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {memory: 1Gi}
