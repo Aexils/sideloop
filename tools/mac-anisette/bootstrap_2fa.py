@@ -9,6 +9,7 @@ le CronJob se connecte sans 2FA.
 
 import getpass
 import json
+import os
 import subprocess
 import sys
 
@@ -35,7 +36,11 @@ def main() -> int:
     binary, apple_id = sys.argv[1], sys.argv[2]
     anisette = MacAnisette(binary)
     print(f"Compte : {apple_id}\nClient : {anisette.client}")
-    password = getpass.getpass("Mot de passe Apple (rien ne s'affiche) : ")
+    # Celui du Secret `sideloop-apple` si bootstrap-2fa.sh a pu le lire : c'est
+    # CELUI-LÀ que le CronJob utilise, pas forcément celui qu'on a en tête
+    # (le 2026-10-30, un mot de passe tapé de mémoire a reçu -22406).
+    password = os.environ.pop("SIDELOOP_APPLE_PASSWORD", "") or getpass.getpass(
+        "Mot de passe Apple (rien ne s'affiche) : ")
     # Le code (SMS ou appareil de confiance) est demandé par grandslam lui-même.
     spd = gsa.authenticate(apple_id, password, anisette)
     if not isinstance(spd, dict) or "adsid" not in spd:

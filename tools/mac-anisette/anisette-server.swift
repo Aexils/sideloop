@@ -119,6 +119,10 @@ listener.stateUpdateHandler = { state in
     // IP tailnet absente (Tailscale arrêté, Mac qui sort de veille) : on sort,
     // launchd relance avec son délai de KeepAlive.
     case .failed(let e): log("écoute impossible : \(e)"); exit(1)
+    // ⚠ Une IP absente ne donne PAS `.failed` : le listener reste en `.waiting`
+    // indéfiniment, sans rien dire (mesuré). Au démarrage du Mac, quand
+    // l'agent part avant Tailscale, il resterait muet pour toujours.
+    case .waiting(let e): log("IP \(args[1]) indisponible (\(e)) — Tailscale pas encore connecté ?"); exit(1)
     default: break
     }
 }

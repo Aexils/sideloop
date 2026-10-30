@@ -18,4 +18,13 @@ cp "$here/../apple_auth/gsa.py" "$work/grandslam/src/grandslam/gsa.py"
 python3 -m venv "$work/venv"
 "$work/venv/bin/pip" install -q "$work/grandslam" requests cryptography
 
+# Le mot de passe du Secret du cluster = celui du CronJob (pas de saisie de
+# mémoire). Sinon, demandé au clavier.
+if pw=$(kubectl --context homelab -n sideloop get secret sideloop-apple \
+      -o jsonpath='{.data.password}' 2>/dev/null | base64 -d) && [ -n "$pw" ]; then
+  echo "Mot de passe : celui du Secret sideloop-apple."
+  export SIDELOOP_APPLE_PASSWORD=$pw
+fi
+unset pw
+
 "$work/venv/bin/python" "$here/bootstrap_2fa.py" "$bin" "$APPLE_ID"
