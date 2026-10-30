@@ -250,11 +250,17 @@ def login(apple_id: str, password: str, anisette_url: str, team_id: str) -> Sess
             st = {}
         ec = st.get("ec")
         if ec not in (None, 0, "0"):
+            # ⚠ Ne pas désigner LE coupable ici : un refus à l'init vise l'en-tête
+            # client (sept., oct.) OU l'empreinte anisette (2026-10-30 : tous les
+            # en-têtes refusés, compte fictif et anisette publique compris — mesuré
+            # par medic). Le message affirmait « le client qu'on annonce » : une
+            # fausse piste servie à quiconque le lit, humain ou agent.
             raise RuntimeError(
                 f"GrandSlam a refusé l'init : ec={ec} « {st.get('em')} » "
                 f"(hsc={st.get('hsc')}). Ce refus tombe AVANT l'examen du mot de "
-                "passe : ce n'est ni le compte, ni la 2FA, ni l'identité anisette, "
-                f"mais le client qu'on annonce — « {GSA_CLIENT_INFO} ». "
+                "passe : ce n'est ni le mot de passe ni la 2FA. Reste l'en-tête "
+                f"client (« {GSA_CLIENT_INFO} ») ou l'empreinte anisette : à "
+                "trancher en changeant UN seul des deux, compte fictif compris. "
                 + (probe_anisette(anisette_url) or "anisette OK.")
             )
         raise RuntimeError(
