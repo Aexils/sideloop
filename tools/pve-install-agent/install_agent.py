@@ -414,6 +414,9 @@ def main() -> int:
                 all_ok = False
                 continue
             attempted += 1
+            # Un run avec retries dépasse le seuil de 40 min de status.py (48 min le
+            # 2026-11-08 → fausse alerte « agent muet ») : on bat aussi entre les installs.
+            write_heartbeat()
             ok, err = install(ipa, udid)
             all_ok &= ok
             name, ptype = device_info(udid)
