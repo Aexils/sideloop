@@ -178,7 +178,13 @@ def build_status() -> SideloopStatus:
     #
     # Elle monte en pression toute seule : série d'échecs + temps restant avant la
     # 1re expiration. Un login cassé condamne TOUTES les apps à J+7, donc l'alerte
-    # doit être lisible dès le 1er échec, pas quand le compte à rebours est fini.
+    # doit être lisible avant que le compte à rebours soit fini.
+    #
+    # Mais pas dès le 1er échec : un refus isolé d'Apple se règle seul au retry
+    # suivant (2026-11-06 et 2026-11-08 : 1 échec puis succès, 9 pushs pour rien).
+    # Alerte à partir du 2e échec d'affilée, ou dès le 1er si la marge est courte.
+    LOGIN_ALERT_STREAK = 2
+    LOGIN_ALERT_URGENT_SEC = 72 * 3600
     last_run = runs[-1] if runs else None
     if last_run is not None and not last_run.login_ok:
         streak = 0
@@ -196,8 +202,10 @@ def build_status() -> SideloopStatus:
             marge = " — signatures DÉJÀ expirées"
         else:
             marge = ""
-        # En tête de liste : c'est la cause, les apps expirées n'en sont que l'effet.
-        alerts.insert(0, f"Login Apple en échec ({depuis}){marge}. {cause}")
+        urgent = not soonest or min(soonest) < LOGIN_ALERT_URGENT_SEC
+        if streak >= LOGIN_ALERT_STREAK or urgent:
+            # En tête de liste : c'est la cause, les apps expirées n'en sont que l'effet.
+            alerts.insert(0, f"Login Apple en échec ({depuis}){marge}. {cause}")
 
     # Santé de l'agent pve : heartbeat périmé (> 40 min ; le timer tourne aux 30 min)
     # = agent mort / pve down → plus aucune install possible.
